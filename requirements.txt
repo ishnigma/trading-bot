@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+alpaca-py
+requests
+apscheduler
+python-multipart
