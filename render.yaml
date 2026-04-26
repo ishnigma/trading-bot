@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: trading-bot
+    runtime: python
+    plan: free   # or starter / standard as needed
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT --workers 2 --timeout 120
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11
+      - key: TRADING_MODE
+        value: paper
+      # Add your other secrets (WEBHOOK_SECRET, DASHBOARD_PASSWORD, ALPACA keys, etc.) in the Render Dashboard under Environment
