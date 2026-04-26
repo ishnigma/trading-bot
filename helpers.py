@@ -219,6 +219,13 @@ def sync_recent_orders(limit=10):
                 write_log(f"Order sync failed for {order_id}: {error}")
 
 
+
+# Check if a symbol is crypto.
+def is_crypto_symbol(symbol):
+    # Alpaca crypto symbols normally look like BTC/USD or ETH/USD.
+    return "/" in str(symbol)
+
+
 def is_market_open():
     # Ask Alpaca whether the market is currently open.
     clock = client.get_clock()
@@ -378,12 +385,23 @@ def validate_trade(state, symbol, action, price, qty, strategy="unknown"):
         if seconds_passed < 15 * 60:
             raise ValueError("Cooldown active")
 
-    # Market and time-window checks.
-    if not is_market_open():
-        raise ValueError("Market is closed")
+    # Asset mode controls.
+    asset_mode = state.get("asset_mode", "stocks")
+    crypto_trade = is_crypto_symbol(symbol)
 
-    if not is_inside_trading_window():
-        raise ValueError("Outside safe trading window")
+    if asset_mode == "stocks" and crypto_trade:
+        raise ValueError("Crypto blocked in stocks mode")
+
+    if asset_mode == "crypto" and not crypto_trade:
+        raise ValueError("Stock blocked in crypto mode")
+
+    # Stock trades obey market hours. Crypto can trade 24/7.
+    if not crypto_trade:
+        if not is_market_open():
+            raise ValueError("Stock market is closed")
+
+        if not is_inside_trading_window():
+            raise ValueError("Outside stock trading window")
 
     # Daily loss check.
     daily_loss_limit = float(state.get("daily_loss_limit", 50.0))
