@@ -438,6 +438,8 @@ def dashboard(
     market_badge = "green" if market_open else "red"
     mode_badge = "red" if TRADING_MODE == "live" else "green"
     maintenance_badge = "orange" if state.get("maintenance_mode") else "green"
+    asset_mode = state.get("asset_mode", "stocks")
+    asset_badge = "green" if asset_mode in ["stocks", "both"] else "orange"
     live_warning = "<div class='live'>WARNING: LIVE TRADING MODE IS ON</div>" if TRADING_MODE == "live" else ""
 
     recent_rows = "".join([
@@ -495,6 +497,7 @@ def dashboard(
                 <p><b>Trading:</b> <span class="badge {trading_badge}">{state.get('trading_enabled')}</span></p>
                 <p><b>Market:</b> <span class="badge {market_badge}">{market_open}</span></p>
                 <p><b>Mode:</b> <span class="badge {mode_badge}">{TRADING_MODE}</span></p>
+                <p><b>Asset Mode:</b> <span class="badge {asset_badge}">{asset_mode}</span></p>
                 <p><b>Maintenance:</b> <span class="badge {maintenance_badge}">{state.get('maintenance_mode')}</span></p>
                 <p><b>Heartbeat:</b> <span class="badge {heartbeat_badge}">{heartbeat_status}</span></p>
                 <p><b>Backup Files:</b> {backup_count}</p>
@@ -522,6 +525,18 @@ def dashboard(
             <form action="/clear-errors" method="post"><button type="submit">Clear Errors</button></form>
             <form action="/close-all-confirm" method="get"><button style="background:red;color:white;" type="submit">CLOSE ALL POSITIONS</button></form>
             <form action="/cancel-orders-confirm" method="get"><button style="background:orange;" type="submit">Cancel All Open Orders</button></form>
+        </div>
+
+        <div class="card"><h2>Asset Mode</h2>
+            <p><b>Current Asset Mode:</b> {asset_mode}</p>
+            <form action="/update-asset-mode" method="post">
+                <label><input type="radio" name="asset_mode" value="stocks" {"checked" if asset_mode == "stocks" else ""}> Stocks Only</label><br>
+                <label><input type="radio" name="asset_mode" value="crypto" {"checked" if asset_mode == "crypto" else ""}> Crypto Only</label><br>
+                <label><input type="radio" name="asset_mode" value="both" {"checked" if asset_mode == "both" else ""}> Both Stocks + Crypto</label><br>
+                <button type="submit">Save Asset Mode</button>
+            </form>
+            <p><b>Crypto symbols:</b> use BTC/USD or ETH/USD.</p>
+            <p><b>Stocks:</b> obey market hours. <b>Crypto:</b> allowed 24/7 when selected.</p>
         </div>
 
         <div class="card"><h2>Risk Settings</h2>
@@ -787,6 +802,25 @@ def cancel_order(order_id: str = Form(...), session: str = Cookie(default="")):
 
 
 # Dashboard settings update routes.
+
+@app.post("/update-asset-mode")
+def update_asset_mode(asset_mode: str, session: str = Cookie(default="")):
+    # Block if not logged in.
+    if not is_logged_in(session):
+        raise HTTPException(status_code=401, detail="Not logged in")
+
+    # Only allow safe choices.
+    if asset_mode not in ["stocks", "crypto", "both"]:
+        raise HTTPException(status_code=400, detail="Bad asset mode")
+
+    # Save asset mode.
+    state = load_state()
+    state["asset_mode"] = asset_mode
+    save_state(state)
+    write_log(f"Asset mode updated: {asset_mode}")
+
+    return RedirectResponse(url="/dashboard", status_code=303)
+
 @app.post("/update-watchlist")
 def update_watchlist(symbols: str = Form(...), session: str = Cookie(default="")):
     if not is_logged_in(session): raise HTTPException(status_code=401, detail="Not logged in")
@@ -934,4 +968,3 @@ def startup_event():
     scheduler.add_job(disable_trading_end_of_day, "cron", hour=15, minute=45, timezone=market_timezone)
     scheduler.add_job(enable_trading_morning, "cron", hour=9, minute=35, timezone=market_timezone)
     scheduler.start()
-
