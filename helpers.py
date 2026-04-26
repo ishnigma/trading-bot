@@ -1,3 +1,13 @@
+# ... existing imports ...
+
+print(f"🚀 Initializing Alpaca client in {TRADING_MODE.upper()} mode")
+client = TradingClient(
+    ALPACA_API_KEY,
+    ALPACA_SECRET_KEY,
+    paper=(TRADING_MODE != "live")
+)
+
+
 # helpers.py
 # Worker functions for state, logs, Alpaca, risk checks, database, backups, and alerts.
 
