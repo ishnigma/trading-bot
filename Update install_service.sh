@@ -61,3 +61,37 @@ Environment=PATH=$VENV_PATH/bin:/usr/local/bin:/usr/bin
 # Production Gunicorn command with external config
 ExecStart=$VENV_PATH/bin/gunicorn app:app \
     -c $PROJECT_DIR/gunicorn.conf.py \
+    --access-logfile - \
+    --error-logfile -
+
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+
+# Reload systemd, enable and restart the service
+sudo systemctl daemon-reload
+sudo systemctl enable tvbot.service
+sudo systemctl restart tvbot.service
+
+echo ""
+echo "✅ Trading Bot service installed and started successfully!"
+echo ""
+echo "🔧 Useful commands:"
+echo "   sudo systemctl status tvbot.service          # Check service status"
+echo "   sudo journalctl -u tvbot.service -f         # View live logs"
+echo "   sudo systemctl restart tvbot.service        # Restart the bot"
+echo "   sudo systemctl stop tvbot.service           # Stop the bot"
+echo "   sudo systemctl disable tvbot.service        # Disable auto-start"
+echo ""
+echo "🌐 Dashboard URL: http://YOUR_SERVER_IP:8000/dashboard"
+echo ""
+echo "⚠️  Remember:"
+echo "   1. Copy .env.example to .env and configure it"
+echo "   2. Start with TRADING_MODE=paper"
+echo "   3. Test thoroughly before switching to live mode"
