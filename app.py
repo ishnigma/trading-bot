@@ -934,3 +934,4 @@ def startup_event():
     scheduler.add_job(disable_trading_end_of_day, "cron", hour=15, minute=45, timezone=market_timezone)
     scheduler.add_job(enable_trading_morning, "cron", hour=9, minute=35, timezone=market_timezone)
     scheduler.start()
+
