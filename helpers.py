@@ -1,23 +1,11 @@
-# ... existing imports ...
-
-print(f"🚀 Initializing Alpaca client in {TRADING_MODE.upper()} mode")
-client = TradingClient(
-    ALPACA_API_KEY,
-    ALPACA_SECRET_KEY,
-    paper=(TRADING_MODE != "live")
-)
-
-
-# helpers.py
-# Worker functions for state, logs, Alpaca, risk checks, database, backups, and alerts.
-
+# helpers.py - COMPLETE FIXED VERSION
 import csv
 import json
 import os
 import shutil
 import sqlite3
 import smtplib
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from email.message import EmailMessage
 from zoneinfo import ZoneInfo
 
@@ -50,16 +38,13 @@ client = TradingClient(
 
 
 def load_state():
-    # Create state if missing.
     if not os.path.exists(STATE_FILE):
         save_state(DEFAULT_STATE.copy())
         return DEFAULT_STATE.copy()
 
-    # Read saved state.
     with open(STATE_FILE, "r") as file:
         state = json.load(file)
 
-    # Add missing new keys without overwriting existing settings.
     changed = False
     for key, value in DEFAULT_STATE.items():
         if key not in state:
@@ -68,60 +53,50 @@ def load_state():
 
     if changed:
         save_state(state)
-
     return state
 
 
 def save_state(state):
-    # Save bot memory to disk.
     with open(STATE_FILE, "w") as file:
         json.dump(state, file, indent=2)
 
 
 def write_log(message):
-    # Append one timestamped line to log file.
     timestamp = datetime.now(timezone.utc).isoformat()
     with open(LOG_FILE, "a") as file:
         file.write(f"{timestamp} | {message}\n")
 
 
 def send_telegram_message(message):
-    # Skip Telegram if not configured.
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
-
-    # Send a message using Telegram Bot API.
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    requests.post(
-        url,
-        json={"chat_id": TELEGRAM_CHAT_ID, "text": message},
-        timeout=10,
-    )
+    try:
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message}, timeout=10)
+    except Exception as e:
+        write_log(f"Telegram send failed: {e}")
 
 
 def send_daily_email_report(report_text):
-    # Skip email if not configured.
     if not EMAIL_FROM or not EMAIL_PASSWORD or not EMAIL_TO:
         return
-
-    # Build and send email.
     msg = EmailMessage()
     msg["Subject"] = "Trading Bot Daily Report"
     msg["From"] = EMAIL_FROM
     msg["To"] = EMAIL_TO
     msg.set_content(report_text)
-
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-        smtp.login(EMAIL_FROM, EMAIL_PASSWORD)
-        smtp.send_message(msg)
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+            smtp.login(EMAIL_FROM, EMAIL_PASSWORD)
+            smtp.send_message(msg)
+    except Exception as e:
+        write_log(f"Email send failed: {e}")
 
 
 def init_database():
-    # Create database tables if they do not exist.
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute(
-        """
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             time TEXT,
@@ -138,42 +113,39 @@ def init_database():
             filled_qty TEXT,
             filled_avg_price TEXT
         )
-        """
-    )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_trades_time ON trades(time)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy)")
     conn.commit()
     conn.close()
 
 
 def save_trade_to_db(symbol, action, qty, price, order_id, strategy, reason, review, trade_score):
-    # Save every trade into SQLite.
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute(
-        """
+    cursor.execute("""
         INSERT OR IGNORE INTO trades (
             time, strategy, symbol, action, qty, price, order_id,
             reason, review, trade_score
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            datetime.now(timezone.utc).isoformat(),
-            strategy,
-            symbol,
-            action,
-            qty,
-            price,
-            str(order_id),
-            reason,
-            review,
-            int(trade_score),
-        ),
-    )
+    """, (
+        datetime.now(timezone.utc).isoformat(),
+        strategy,
+        symbol,
+        action,
+        qty,
+        price,
+        str(order_id),
+        reason,
+        review,
+        int(trade_score),
+    ))
     conn.commit()
     conn.close()
 
 
 def get_trades_from_db(limit=1000):
-    # Read recent trades from SQLite.
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
@@ -184,7 +156,6 @@ def get_trades_from_db(limit=1000):
 
 
 def get_order_status(order_id):
-    # Get one order from Alpaca.
     order = client.get_order_by_id(order_id)
     return {
         "id": str(order.id),
@@ -196,29 +167,24 @@ def get_order_status(order_id):
 
 
 def update_db_trade_with_fill(order_id):
-    # Sync fill data from Alpaca into SQLite.
     order_info = get_order_status(order_id)
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute(
-        """
+    cursor.execute("""
         UPDATE trades
         SET fill_status = ?, filled_qty = ?, filled_avg_price = ?
         WHERE order_id = ?
-        """,
-        (
-            order_info.get("status"),
-            order_info.get("filled_qty"),
-            order_info.get("filled_avg_price"),
-            str(order_id),
-        ),
-    )
+    """, (
+        order_info.get("status"),
+        order_info.get("filled_qty"),
+        order_info.get("filled_avg_price"),
+        str(order_id),
+    ))
     conn.commit()
     conn.close()
 
 
 def sync_recent_orders(limit=10):
-    # Update recent orders with latest Alpaca fill status.
     rows = get_trades_from_db(limit)
     for row in rows:
         order_id = row.get("order_id")
@@ -230,39 +196,34 @@ def sync_recent_orders(limit=10):
 
 
 def is_market_open():
-    # Ask Alpaca whether the market is currently open.
     clock = client.get_clock()
     return bool(clock.is_open)
 
 
 def get_daily_pnl():
-    # Calculate account daily P/L using Alpaca account equity fields.
     account = client.get_account()
     return float(account.equity) - float(account.last_equity)
 
 
 def calculate_qty_from_price(price, state, strategy="unknown"):
-    # Choose dollars per trade from default or strategy-specific settings.
+    if float(price) <= 0:
+        raise ValueError(f"Invalid price: {price}")
+    
     dollars_per_trade = float(state.get("max_dollars_per_trade", 50.0))
     strategy_limits = state.get("strategy_max_dollars", {})
     if strategy in strategy_limits:
         dollars_per_trade = float(strategy_limits[strategy])
 
-    # Do not exceed buying power.
     account = client.get_account()
     buying_power = float(account.buying_power)
     max_dollars_to_use = min(dollars_per_trade, buying_power)
 
-    # Use whole shares only.
     qty = int(max_dollars_to_use // float(price))
-
-    # Apply max shares rule.
     max_shares = int(state.get("max_shares_per_trade", 5))
     return min(qty, max_shares)
 
 
 def build_bracket_order(symbol, qty, action, price, state, strategy="unknown"):
-    # Build a market bracket order with dashboard TP/SL settings.
     side = OrderSide.BUY if action == "buy" else OrderSide.SELL
 
     take_profit_percent = float(state.get("take_profit_percent", 1.0))
@@ -277,7 +238,6 @@ def build_bracket_order(symbol, qty, action, price, state, strategy="unknown"):
         take_profit_price = round(float(price) * (1 + take_profit_percent / 100), 2)
         stop_loss_price = round(float(price) * (1 - stop_loss_percent / 100), 2)
     else:
-        # Short side bracket logic is basic. Test in paper before any live use.
         take_profit_price = round(float(price) * (1 - take_profit_percent / 100), 2)
         stop_loss_price = round(float(price) * (1 + stop_loss_percent / 100), 2)
 
@@ -293,7 +253,6 @@ def build_bracket_order(symbol, qty, action, price, state, strategy="unknown"):
 
 
 def reset_daily_state_if_needed(state):
-    # Reset daily counters when UTC date changes.
     today = datetime.now(timezone.utc).date().isoformat()
     if state.get("last_reset_date") != today:
         state["trade_count"] = 0
@@ -305,7 +264,6 @@ def reset_daily_state_if_needed(state):
 
 
 def is_inside_trading_window():
-    # Use conservative New York market-time window.
     now_et = datetime.now(ZoneInfo("America/New_York"))
     now_minutes = now_et.hour * 60 + now_et.minute
     start_minutes = 9 * 60 + 35
@@ -313,14 +271,11 @@ def is_inside_trading_window():
     return start_minutes <= now_minutes <= end_minutes
 
 
-
 def is_crypto_symbol(symbol):
-    # Alpaca crypto symbols are usually formatted like BTC/USD or ETH/USD.
     return "/" in str(symbol)
 
 
 def has_open_position(symbol):
-    # Check if Alpaca account already holds this symbol.
     try:
         positions = client.get_all_positions()
         return any(position.symbol == symbol for position in positions)
@@ -329,37 +284,29 @@ def has_open_position(symbol):
 
 
 def validate_trade(state, symbol, action, price, qty, strategy="unknown"):
-    # Stop trades when maintenance mode is on.
     if state.get("maintenance_mode", False):
         raise ValueError("Maintenance mode is ON")
 
-    # Stop trades when paused.
     paused_until = state.get("paused_until")
     if paused_until:
         if datetime.now(timezone.utc) < datetime.fromisoformat(paused_until):
             raise ValueError("Bot is paused")
 
-    # Stop all trades if disabled.
     if not state.get("trading_enabled", False):
         raise ValueError("Trading is OFF")
 
-    # Extra live-mode lock.
     if TRADING_MODE == "live" and not state.get("live_confirmed", False):
         raise ValueError("Live mode not confirmed")
 
-    # Block paper-only strategies in live mode.
     if TRADING_MODE == "live" and strategy in state.get("paper_only_strategies", []):
         raise ValueError("Strategy is paper-only")
 
-    # Only approved live strategies may trade live.
     if TRADING_MODE == "live" and strategy not in state.get("approved_live_strategies", []):
         raise ValueError("Strategy not approved for live trading")
 
-    # Block disabled strategies.
     if strategy in state.get("disabled_strategies", []):
         raise ValueError("Strategy is disabled")
 
-    # Validate symbol/action/price/qty.
     allowed_symbols = state.get("allowed_symbols", ["AAPL", "TSLA", "SPY"])
     if symbol not in allowed_symbols:
         raise ValueError("Symbol not allowed")
@@ -376,45 +323,35 @@ def validate_trade(state, symbol, action, price, qty, strategy="unknown"):
     if float(qty) < 1:
         raise ValueError("Qty is less than 1")
 
-    # Limit trades per day.
     max_trades = int(state.get("max_trades_per_day", 5))
     if int(state.get("trade_count", 0)) >= max_trades:
         raise ValueError("Max trades reached today")
 
-    # Limit trades per strategy.
     strategy_limits = state.get("strategy_max_trades_per_day", {})
     strategy_counts = state.get("strategy_trade_counts", {})
     if strategy in strategy_limits and strategy_counts.get(strategy, 0) >= int(strategy_limits[strategy]):
         raise ValueError("Strategy max trades reached")
 
-    # Cooldown between trades.
     last_trade_time = state.get("last_trade_time")
     if last_trade_time:
         seconds_passed = (datetime.now(timezone.utc) - datetime.fromisoformat(last_trade_time)).total_seconds()
         if seconds_passed < 15 * 60:
             raise ValueError("Cooldown active")
 
-    # Asset mode checks: stocks obey market hours, crypto can run 24/7.
     asset_mode = state.get("asset_mode", "stocks")
     crypto_trade = is_crypto_symbol(symbol)
 
     if asset_mode == "stocks" and crypto_trade:
         raise ValueError("Crypto blocked in stocks mode")
-
     if asset_mode == "crypto" and not crypto_trade:
         raise ValueError("Stock blocked in crypto mode")
 
-    # Stock trades only during market hours and safe window.
     if not crypto_trade:
         if not is_market_open():
             raise ValueError("Stock market is closed")
-
         if not is_inside_trading_window():
             raise ValueError("Outside stock trading window")
 
-    # Crypto trades skip stock market-hour checks.
-
-    # Daily loss check.
     daily_loss_limit = float(state.get("daily_loss_limit", 50.0))
     if get_daily_pnl() <= -daily_loss_limit:
         state["trading_enabled"] = False
@@ -422,13 +359,11 @@ def validate_trade(state, symbol, action, price, qty, strategy="unknown"):
         send_telegram_message("Trading turned OFF: daily loss limit hit")
         raise ValueError("Daily loss limit hit")
 
-    # Duplicate position check.
     if action == "buy" and has_open_position(symbol):
         raise ValueError("Already holding this symbol")
 
 
 def handle_successful_trade(state, symbol, action, qty, order_id, strategy):
-    # Update counters after successful order submission.
     state["trade_count"] = int(state.get("trade_count", 0)) + 1
     state["last_trade_time"] = datetime.now(timezone.utc).isoformat()
     state["error_count"] = 0
@@ -443,7 +378,6 @@ def handle_successful_trade(state, symbol, action, qty, order_id, strategy):
 
 
 def record_error(state, error_message):
-    # Record error and disable trading after too many errors.
     state["error_count"] = int(state.get("error_count", 0)) + 1
     state["last_error_time"] = datetime.now(timezone.utc).isoformat()
     state["last_error_message"] = error_message
@@ -457,7 +391,6 @@ def record_error(state, error_message):
 
 
 def create_trade_review(symbol, action, price, strategy, reason):
-    # Simple review text for the journal.
     return (
         f"Strategy: {strategy}. Action: {action}. Symbol: {symbol}. "
         f"Signal price: {price}. Reason: {reason}. "
@@ -466,7 +399,6 @@ def create_trade_review(symbol, action, price, strategy, reason):
 
 
 def create_trade_score(symbol, action, price, strategy, reason, state=None):
-    # Simple score from 0 to 100.
     score = 50
     if strategy and strategy != "unknown":
         score += 10
@@ -488,7 +420,6 @@ def create_trade_score(symbol, action, price, strategy, reason, state=None):
 
 
 def get_open_positions():
-    # Get current Alpaca positions.
     positions = client.get_all_positions()
     return [
         {
@@ -503,7 +434,6 @@ def get_open_positions():
 
 
 def get_open_orders():
-    # Get current open Alpaca orders.
     orders = client.get_orders()
     return [
         {
@@ -519,7 +449,6 @@ def get_open_orders():
 
 
 def close_all_positions():
-    # Emergency close all positions and cancel orders.
     result = client.close_all_positions(cancel_orders=True)
     write_log("Close all positions requested")
     send_telegram_message("Emergency: close all positions requested")
@@ -527,7 +456,6 @@ def close_all_positions():
 
 
 def close_one_position(symbol):
-    # Close one Alpaca position.
     result = client.close_position(symbol)
     write_log(f"Close position requested for {symbol}")
     send_telegram_message(f"Close position requested for {symbol}")
@@ -535,7 +463,6 @@ def close_one_position(symbol):
 
 
 def cancel_all_orders():
-    # Cancel all open Alpaca orders.
     result = client.cancel_orders()
     write_log("Cancel all orders requested")
     send_telegram_message("All open orders cancellation requested")
@@ -543,7 +470,6 @@ def cancel_all_orders():
 
 
 def cancel_one_order(order_id):
-    # Cancel one Alpaca order.
     result = client.cancel_order_by_id(order_id)
     write_log(f"Cancel order requested: {order_id}")
     send_telegram_message(f"Cancel order requested: {order_id}")
@@ -551,7 +477,6 @@ def cancel_one_order(order_id):
 
 
 def make_daily_backup():
-    # Backup local files.
     backup_folder = "backups"
     os.makedirs(backup_folder, exist_ok=True)
     today = datetime.now(timezone.utc).date().isoformat()
@@ -563,7 +488,6 @@ def make_daily_backup():
 
 
 def clean_old_backups():
-    # Delete backups older than 30 days.
     backup_folder = "backups"
     if not os.path.exists(backup_folder):
         return
@@ -578,7 +502,6 @@ def clean_old_backups():
 
 
 def migrate_csv_to_db():
-    # Optional migration from old journal.csv.
     if not os.path.exists("journal.csv"):
         return 0
     with open("journal.csv", "r") as file:
@@ -599,3 +522,133 @@ def migrate_csv_to_db():
         imported += 1
     write_log(f"CSV migration completed. Imported {imported} rows")
     return imported
+
+
+# ========== MISSING FUNCTIONS ADDED ==========
+
+def check_heartbeat_warning():
+    """Check if heartbeat hasn't been received"""
+    state = load_state()
+    last_webhook = state.get("last_webhook_time")
+    if last_webhook:
+        try:
+            last_time = datetime.fromisoformat(last_webhook)
+            if datetime.now() - last_time > timedelta(minutes=30):
+                if not state.get("heartbeat_warning_sent"):
+                    send_telegram_message("⚠️ Warning: No heartbeat webhook received in 30 minutes")
+                    state["heartbeat_warning_sent"] = True
+                    save_state(state)
+        except Exception as e:
+            write_log(f"Heartbeat check error: {e}")
+
+
+def check_market_status_alert():
+    """Alert when market opens/closes"""
+    try:
+        is_open = is_market_open()
+        state = load_state()
+        last_status = state.get("last_market_status")
+        if last_status != is_open:
+            status_text = "OPEN" if is_open else "CLOSED"
+            send_telegram_message(f"📊 Market is now {status_text}")
+            state["last_market_status"] = is_open
+            save_state(state)
+    except Exception as e:
+        write_log(f"Market status alert error: {e}")
+
+
+def disable_trading_end_of_day():
+    """Auto-disable trading at market close"""
+    try:
+        state = load_state()
+        if state.get("trading_enabled"):
+            state["trading_enabled"] = False
+            save_state(state)
+            write_log("Auto-disabled trading at end of day")
+            send_telegram_message("🔴 Trading auto-disabled at market close")
+    except Exception as e:
+        write_log(f"Disable EOD error: {e}")
+
+
+def enable_trading_morning():
+    """Auto-enable trading at market open"""
+    try:
+        state = load_state()
+        if not state.get("trading_enabled"):
+            state["trading_enabled"] = True
+            save_state(state)
+            write_log("Auto-enabled trading at market open")
+            send_telegram_message("🟢 Trading auto-enabled at market open")
+    except Exception as e:
+        write_log(f"Enable morning error: {e}")
+
+
+def get_heartbeat_status():
+    """Get heartbeat status for dashboard"""
+    state = load_state()
+    last_webhook = state.get("last_webhook_time")
+    if not last_webhook:
+        return "No heartbeat received", "warning"
+    try:
+        last_time = datetime.fromisoformat(last_webhook)
+        minutes_ago = (datetime.now() - last_time).total_seconds() / 60
+        if minutes_ago < 5:
+            return f"Healthy ({minutes_ago:.0f} min ago)", "ok"
+        elif minutes_ago < 30:
+            return f"Warning ({minutes_ago:.0f} min ago)", "warning"
+        else:
+            return f"Critical ({minutes_ago:.0f} min ago)", "critical"
+    except Exception:
+        return "Error parsing heartbeat", "error"
+
+
+def send_scheduled_daily_report():
+    """Send daily performance report"""
+    try:
+        trades = get_trades_from_db(100)
+        daily_pnl = get_daily_pnl()
+        state = load_state()
+        
+        report = f"""📊 Daily Trading Report
+Date: {datetime.now().strftime('%Y-%m-%d')}
+Trades Today: {state.get('trade_count', 0)}
+Daily P/L: ${daily_pnl:.2f}
+Trading Enabled: {state.get('trading_enabled', False)}
+"""
+        send_telegram_message(report)
+        send_daily_email_report(report)
+        write_log("Daily report sent")
+    except Exception as e:
+        write_log(f"Daily report error: {e}")
+
+
+def auto_disable_bad_strategies():
+    """Auto-disable strategies that lose money"""
+    try:
+        state = load_state()
+        trades = get_trades_from_db(50)
+        strategy_pnl = {}
+        
+        for trade in trades:
+            strategy = trade.get('strategy')
+            if strategy and strategy not in strategy_pnl:
+                strategy_pnl[strategy] = 0
+            if strategy and trade.get('action') == 'sell':
+                try:
+                    qty = float(trade.get('qty', 0))
+                    price = float(trade.get('price', 0))
+                    strategy_pnl[strategy] += qty * price
+                except:
+                    pass
+        
+        disabled = state.get('disabled_strategies', [])
+        for strategy, pnl in strategy_pnl.items():
+            if pnl < -100 and strategy not in disabled:
+                disabled.append(strategy)
+                send_telegram_message(f"⚠️ Auto-disabled {strategy} due to losses: ${pnl:.2f}")
+                write_log(f"Auto-disabled {strategy} (PnL: ${pnl:.2f})")
+        
+        state['disabled_strategies'] = disabled
+        save_state(state)
+    except Exception as e:
+        write_log(f"Auto-disable strategies error: {e}")
