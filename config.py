@@ -1,39 +1,42 @@
-# config.py
-# Central settings loaded from .env and default bot state.
-
+# config.py - FIXED VERSION
 import os
 from dotenv import load_dotenv
 
-# Load secret values from .env
 load_dotenv()
 
-# Webhook and dashboard security
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "mysecret123")
-DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "change_this_password")
+# Require these variables - no defaults for security
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
+DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD")
+ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
+ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 
-# Trading mode: paper or live
+# Validate required variables
+required_vars = {
+    "WEBHOOK_SECRET": WEBHOOK_SECRET,
+    "DASHBOARD_PASSWORD": DASHBOARD_PASSWORD,
+    "ALPACA_API_KEY": ALPACA_API_KEY,
+    "ALPACA_SECRET_KEY": ALPACA_SECRET_KEY
+}
+
+missing = [name for name, value in required_vars.items() if not value]
+if missing:
+    raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
+
 TRADING_MODE = os.getenv("TRADING_MODE", "paper").lower()
+if TRADING_MODE not in ["paper", "live"]:
+    raise ValueError(f"TRADING_MODE must be 'paper' or 'live', got '{TRADING_MODE}'")
 
-# Alpaca credentials
-ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
-ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
-
-# Telegram settings, optional
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-
-# Email settings, optional
 EMAIL_FROM = os.getenv("EMAIL_FROM", "")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
 EMAIL_TO = os.getenv("EMAIL_TO", "")
 
-# File names
 STATE_FILE = "state.json"
 LOG_FILE = "trades.log"
 DB_FILE = "trading_bot.db"
 BOT_VERSION = "1.0.0"
 
-# Default bot memory. This is copied into state.json when needed.
 DEFAULT_STATE = {
     "trade_count": 0,
     "last_trade_time": None,
