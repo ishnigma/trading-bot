@@ -1,4 +1,4 @@
-# helpers.py - COMPLETE FIXED VERSION
+# helpers.py - COMPLETE FIXED VERSION WITH PAPER API ENDPOINT
 import csv
 import json
 import os
@@ -29,12 +29,22 @@ from config import (
     TRADING_MODE,
 )
 
-# Create Alpaca client. paper=True unless TRADING_MODE is live.
-client = TradingClient(
-    ALPACA_API_KEY,
-    ALPACA_SECRET_KEY,
-    paper=(TRADING_MODE != "live")
-)
+# ========== CREATE ALPACA CLIENT WITH CORRECT PAPER TRADING ENDPOINT ==========
+if TRADING_MODE == "live":
+    client = TradingClient(
+        ALPACA_API_KEY,
+        ALPACA_SECRET_KEY,
+        paper=False,
+        api_endpoint="https://api.alpaca.markets"
+    )
+else:
+    # Paper trading - use paper API endpoint
+    client = TradingClient(
+        ALPACA_API_KEY,
+        ALPACA_SECRET_KEY,
+        paper=True,
+        api_endpoint="https://paper-api.alpaca.markets"
+    )
 
 
 def load_state():
