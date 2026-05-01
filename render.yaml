@@ -7,15 +7,23 @@ services:
     envVars:
       - key: TRADING_MODE
         value: paper
+      - key: OANDA_TRADING_MODE
+        value: demo
       - key: DASHBOARD_PASSWORD
         sync: false
       - key: WEBHOOK_SECRET
         sync: false
-      - key: ALPACA_API_KEY
+      - key: OANDA_API_KEY
         sync: false
-      - key: ALPACA_SECRET_KEY
+      - key: OANDA_ACCOUNT_ID
         sync: false
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: EMAIL_PASSWORD
+        sync: false
+      - key: EMAIL_TO
         sync: false
