@@ -377,4 +377,131 @@ def make_daily_backup():
     write_log("Daily backup completed")
 
 
-def clean_
+def clean_old_backups():
+    backup_folder = "backups"
+    if not os.path.exists(backup_folder):
+        return
+    now = datetime.now(timezone.utc)
+    for file_name in os.listdir(backup_folder):
+        file_path = os.path.join(backup_folder, file_name)
+        if os.path.isfile(file_path):
+            file_time = datetime.fromtimestamp(os.path.getmtime(file_path), timezone.utc)
+            if (now - file_time).days > 30:
+                os.remove(file_path)
+    write_log("Old backups cleaned")
+
+
+# ========== SCHEDULER REQUIRED FUNCTIONS ==========
+
+def check_heartbeat_warning():
+    state = load_state()
+    last_webhook = state.get("last_webhook_time")
+    if last_webhook:
+        try:
+            last_time = datetime.fromisoformat(last_webhook)
+            if datetime.now() - last_time > timedelta(minutes=30):
+                if not state.get("heartbeat_warning_sent"):
+                    send_telegram_message("⚠️ Warning: No heartbeat webhook received in 30 minutes")
+                    state["heartbeat_warning_sent"] = True
+                    save_state(state)
+        except Exception as e:
+            write_log(f"Heartbeat check error: {e}")
+
+
+def check_market_status_alert():
+    try:
+        is_open = is_market_open()
+        state = load_state()
+        last_status = state.get("last_market_status")
+        if last_status != is_open:
+            status_text = "OPEN" if is_open else "CLOSED"
+            send_telegram_message(f"📊 Market is now {status_text}")
+            state["last_market_status"] = is_open
+            save_state(state)
+    except Exception as e:
+        write_log(f"Market status alert error: {e}")
+
+
+def disable_trading_end_of_day():
+    try:
+        state = load_state()
+        if state.get("trading_enabled"):
+            state["trading_enabled"] = False
+            save_state(state)
+            write_log("Auto-disabled trading at end of day")
+            send_telegram_message("🔴 Trading auto-disabled at market close")
+    except Exception as e:
+        write_log(f"Disable EOD error: {e}")
+
+
+def enable_trading_morning():
+    try:
+        state = load_state()
+        if not state.get("trading_enabled"):
+            state["trading_enabled"] = True
+            save_state(state)
+            write_log("Auto-enabled trading at market open")
+            send_telegram_message("🟢 Trading auto-enabled at market open")
+    except Exception as e:
+        write_log(f"Enable morning error: {e}")
+
+
+def get_heartbeat_status():
+    state = load_state()
+    last_webhook = state.get("last_webhook_time")
+    if not last_webhook:
+        return "No heartbeat received", "warning"
+    try:
+        last_time = datetime.fromisoformat(last_webhook)
+        minutes_ago = (datetime.now() - last_time).total_seconds() / 60
+        if minutes_ago < 5:
+            return f"Healthy ({minutes_ago:.0f} min ago)", "ok"
+        elif minutes_ago < 30:
+            return f"Warning ({minutes_ago:.0f} min ago)", "warning"
+        else:
+            return f"Critical ({minutes_ago:.0f} min ago)", "critical"
+    except Exception:
+        return "Error parsing heartbeat", "error"
+
+
+def send_scheduled_daily_report():
+    try:
+        daily_pnl = get_daily_pnl()
+        state = load_state()
+        report = f"""📊 Daily Trading Report
+Date: {datetime.now().strftime('%Y-%m-%d')}
+Trades Today: {state.get('trade_count', 0)}
+Daily P/L: ${daily_pnl:.2f}
+Trading Enabled: {state.get('trading_enabled', False)}"""
+        send_telegram_message(report)
+        send_daily_email_report(report)
+        write_log("Daily report sent")
+    except Exception as e:
+        write_log(f"Daily report error: {e}")
+
+
+def auto_disable_bad_strategies():
+    try:
+        state = load_state()
+        trades = get_trades_from_db(50)
+        strategy_pnl = {}
+        for trade in trades:
+            strategy = trade.get('strategy')
+            if strategy and strategy not in strategy_pnl:
+                strategy_pnl[strategy] = 0
+            if strategy and trade.get('action') == 'sell':
+                try:
+                    units = float(trade.get('units', 0))
+                    price = float(trade.get('price', 0))
+                    strategy_pnl[strategy] += units * price
+                except:
+                    pass
+        disabled = state.get('disabled_strategies', [])
+        for strategy, pnl in strategy_pnl.items():
+            if pnl < -100 and strategy not in disabled:
+                disabled.append(strategy)
+                send_telegram_message(f"⚠️ Auto-disabled {strategy} due to losses: ${pnl:.2f}")
+        state['disabled_strategies'] = disabled
+        save_state(state)
+    except Exception as e:
+        write_log(f"Auto-disable strategies error: {e}")
