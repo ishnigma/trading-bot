@@ -18,8 +18,8 @@ TRADING_MODE = os.getenv("TRADING_MODE", "paper").lower()
 
 # ========== AUTONOMOUS STRATEGY SETTINGS ==========
 STRATEGY_ENABLED = os.getenv("STRATEGY_ENABLED", "false").lower() == "true"
-STRATEGY_TYPE = os.getenv("STRATEGY_TYPE", "ema_crossover")  # ema_crossover, rsi, macd
-STRATEGY_TIMEFRAME = os.getenv("STRATEGY_TIMEFRAME", "5")  # Minutes between checks
+STRATEGY_TYPE = os.getenv("STRATEGY_TYPE", "ema_crossover")
+STRATEGY_TIMEFRAME = os.getenv("STRATEGY_TIMEFRAME", "5")
 FAST_EMA_PERIOD = int(os.getenv("FAST_EMA_PERIOD", "9"))
 SLOW_EMA_PERIOD = int(os.getenv("SLOW_EMA_PERIOD", "21"))
 RSI_PERIOD = int(os.getenv("RSI_PERIOD", "14"))
@@ -101,7 +101,6 @@ DEFAULT_STATE = {
     "strategy_presets": {},
     "last_backtest_time": None,
     "last_backtest_status": None,
-    # Autonomous strategy tracking
     "last_strategy_check": None,
     "last_signal": None,
     "position_open": False,
