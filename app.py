@@ -1,4 +1,4 @@
-# app.py - COMPLETE FULL FEATURED VERSION
+# app.py - COMPLETE WITH FOREX OVERRIDE TOGGLE
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -276,7 +276,7 @@ def get_notifications(session: str = Cookie(default="")):
     notifications.append({"type": "mode", "message": f"{mode_icons.get(asset_mode, '💱')} Trading: {asset_mode.upper()}", "priority": "low"})
     
     if STRATEGY_ENABLED:
-        notifications.append({"type": "strategy", "message": f"🤖 Auto Strategy: {STRATEGY_TYPE if 'STRATEGY_TYPE' in dir() else 'ema_crossover'} (every {STRATEGY_TIMEFRAME} min)", "priority": "low"})
+        notifications.append({"type": "strategy", "message": f"🤖 Auto Strategy: {STRATEGY_TYPE} (every {STRATEGY_TIMEFRAME} min)", "priority": "low"})
     
     return {"notifications": notifications}
 
@@ -286,6 +286,32 @@ def get_api_symbols(session: str = Cookie(default="")):
         raise HTTPException(401, "Not logged in")
     state = load_state()
     return {"symbols": state.get("allowed_symbols", [])}
+
+
+# ========== FOREX OVERRIDE ENDPOINTS ==========
+
+@app.post("/toggle-forex-override")
+def toggle_forex_override(session: str = Cookie(default="")):
+    if not is_logged_in(session):
+        raise HTTPException(401, "Not logged in")
+    state = load_state()
+    current = state.get("force_forex_trading", False)
+    state["force_forex_trading"] = not current
+    save_state(state)
+    
+    status = "ENABLED" if state["force_forex_trading"] else "DISABLED"
+    write_log(f"Forex market override {status}")
+    send_telegram_message(f"🔧 Forex market override {status}")
+    
+    return RedirectResponse("/dashboard", 303)
+
+
+@app.get("/api/forex-override")
+def get_forex_override(session: str = Cookie(default="")):
+    if not is_logged_in(session):
+        return {"force_forex_trading": False}
+    state = load_state()
+    return {"force_forex_trading": state.get("force_forex_trading", False)}
 
 
 # ========== DASHBOARD CONTROLS ==========
@@ -518,6 +544,7 @@ def dashboard(session: str = Cookie(default="")):
     asset_mode = state.get("asset_mode", "forex")
     mode_display = {"forex": "💱 Forex", "stocks": "📈 Stocks", "crypto": "🪙 Crypto", "both": "🌐 Both Markets"}
     mode_text = mode_display.get(asset_mode, "💱 Forex")
+    force_forex_override = state.get("force_forex_trading", False)
 
     return f"""
     <!DOCTYPE html>
@@ -588,7 +615,21 @@ def dashboard(session: str = Cookie(default="")):
             .status-disabled {{ background: #d32f2f; color: white; }}
             .status-open {{ background: #00c853; color: white; }}
             .status-closed {{ background: #ff6d00; color: white; }}
+            .status-warning {{
+                background: #ff6d00;
+                color: white;
+                padding: 4px 12px;
+                border-radius: 20px;
+                display: inline-block;
+                animation: pulse 1s infinite;
+            }}
             .mode-forex {{ background: #2196f3; }}
+            
+            @keyframes pulse {{
+                0% {{ opacity: 1; }}
+                50% {{ opacity: 0.7; }}
+                100% {{ opacity: 1; }}
+            }}
             
             button {{
                 background: #00d4ff;
@@ -675,6 +716,31 @@ def dashboard(session: str = Cookie(default="")):
                 </div>
             </div>
             
+            <!-- Forex Market Override Toggle -->
+            <div class="card">
+                <h3>🔧 Forex Market Override</h3>
+                <div class="flex" style="align-items: center; justify-content: space-between; flex-wrap: wrap;">
+                    <div>
+                        <div>
+                            <span id="forexOverrideStatus" class="status-badge {'status-warning' if force_forex_override else 'status-enabled'}">
+                                {'⚠️ OVERRIDE ACTIVE' if force_forex_override else '✅ Normal Hours Only'}
+                            </span>
+                        </div>
+                        <div class="metric-label" style="margin-top: 8px;">
+                            Current Market: <span id="marketStatusDisplay">{'OPEN' if market_open else 'CLOSED'}</span>
+                        </div>
+                        <div style="font-size: 0.7rem; opacity: 0.6; margin-top: 8px;">
+                            ⚠️ WARNING: Trading outside normal hours (Sun 5pm - Fri 5pm ET) may have wider spreads
+                        </div>
+                    </div>
+                    <form method="post" action="/toggle-forex-override">
+                        <button type="submit" id="forexOverrideBtn" class="warning">
+                            {'🔒 Disable Override' if force_forex_override else '🔓 Force Enable 24/7'}
+                        </button>
+                    </form>
+                </div>
+            </div>
+            
             <div class="card">
                 <h3>🎮 Controls</h3>
                 <div class="flex">
@@ -742,6 +808,7 @@ def dashboard(session: str = Cookie(default="")):
                 <div>Mode: {TRADING_MODE.upper()}</div>
                 <div>Strategy: {'AUTONOMOUS ON' if STRATEGY_ENABLED else 'AUTONOMOUS OFF'}</div>
                 <div>Last Reset: {state.get('last_reset_date', 'Never')}</div>
+                <div>Forex Override: {'ACTIVE (24/7 Mode)' if force_forex_override else 'OFF (Normal Hours)'}</div>
             </div>
         </div>
         
@@ -796,13 +863,55 @@ def dashboard(session: str = Cookie(default="")):
                     .catch(err => console.log('Weekly breakdown error:', err));
             }}
             
+            function refreshForexOverride() {{
+                fetch('/api/forex-override')
+                    .then(r => r.json())
+                    .then(data => {{
+                        const statusSpan = document.getElementById('forexOverrideStatus');
+                        const btn = document.getElementById('forexOverrideBtn');
+                        if (data.force_forex_trading) {{
+                            if (statusSpan) {{
+                                statusSpan.innerHTML = '⚠️ OVERRIDE ACTIVE (24/7 Mode)';
+                                statusSpan.className = 'status-badge status-warning';
+                            }}
+                            if (btn) btn.innerHTML = '🔒 Disable Override';
+                        }} else {{
+                            if (statusSpan) {{
+                                statusSpan.innerHTML = '✅ Normal Hours Only';
+                                statusSpan.className = 'status-badge status-enabled';
+                            }}
+                            if (btn) btn.innerHTML = '🔓 Force Enable 24/7';
+                        }}
+                    }})
+                    .catch(err => console.log('Forex override refresh error:', err));
+            }}
+            
+            function refreshMarketStatus() {{
+                fetch('/api/notifications')
+                    .then(r => r.json())
+                    .then(data => {{
+                        const marketSpan = document.getElementById('marketStatusDisplay');
+                        if (marketSpan && data.notifications) {{
+                            const marketNotif = data.notifications.find(n => n.type === 'market');
+                            if (marketNotif) {{
+                                marketSpan.innerHTML = marketNotif.message;
+                            }}
+                        }}
+                    }})
+                    .catch(err => console.log('Market status refresh error:', err));
+            }}
+            
             setInterval(() => {{
                 refreshNotifications();
                 refreshProfitMetrics();
+                refreshForexOverride();
+                refreshMarketStatus();
             }}, 10000);
             
             refreshNotifications();
             refreshProfitMetrics();
+            refreshForexOverride();
+            refreshMarketStatus();
         </script>
     </body>
     </html>
