@@ -21,9 +21,3 @@ services:
         sync: false
       - key: TELEGRAM_CHAT_ID
         sync: false
-      - key: EMAIL_FROM
-        sync: false
-      - key: EMAIL_PASSWORD
-        sync: false
-      - key: EMAIL_TO
-        sync: false
