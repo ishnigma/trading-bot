@@ -2,8 +2,8 @@ fastapi==0.104.1
 uvicorn[standard]==0.24.0
 gunicorn==21.2.0
 python-dotenv==1.0.0
-alpaca-py==0.21.0
 requests==2.31.0
 apscheduler==3.10.4
 python-multipart==0.0.6
 pytz==2023.3
+oandapyV20==0.6.4
