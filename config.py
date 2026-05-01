@@ -1,4 +1,4 @@
-# config.py - OANDA VERSION WITH AUTONOMOUS STRATEGY
+# config.py - COMPLETE WITH FOREX OVERRIDE
 import os
 from dotenv import load_dotenv
 
@@ -105,4 +105,6 @@ DEFAULT_STATE = {
     "last_signal": None,
     "position_open": False,
     "current_position_symbol": None,
+    # ========== FOREX MARKET OVERRIDE ==========
+    "force_forex_trading": False,
 }
