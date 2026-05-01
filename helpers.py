@@ -1,4 +1,4 @@
-# helpers.py - OANDA VERSION - COMPLETE CORRECTED
+# helpers.py - OANDA VERSION - COMPLETE
 import csv
 import json
 import os
@@ -29,7 +29,6 @@ from config import (
 
 from oanda_client import OandaClient
 
-# ========== CREATE OANDA CLIENT ==========
 is_demo = (OANDA_TRADING_MODE == "demo") or (TRADING_MODE != "live")
 client = OandaClient(OANDA_API_KEY, OANDA_ACCOUNT_ID, is_demo=is_demo)
 
@@ -38,16 +37,13 @@ def load_state():
     if not os.path.exists(STATE_FILE):
         save_state(DEFAULT_STATE.copy())
         return DEFAULT_STATE.copy()
-
     with open(STATE_FILE, "r") as file:
         state = json.load(file)
-
     changed = False
     for key, value in DEFAULT_STATE.items():
         if key not in state:
             state[key] = value
             changed = True
-
     if changed:
         save_state(state)
     return state
@@ -194,18 +190,15 @@ def get_daily_pnl():
 
 
 def calculate_units_from_price(price, state, strategy="unknown"):
-    """Calculate units to trade based on risk per trade"""
     units_per_trade = float(state.get("max_units_per_trade", 10000))
     strategy_limits = state.get("strategy_max_units", {})
     if strategy in strategy_limits:
         units_per_trade = float(strategy_limits[strategy])
-    
     max_units = int(state.get("max_units_per_trade", 10000))
     return int(min(units_per_trade, max_units))
 
 
 def calculate_stop_loss_price(side, price, pips):
-    """Calculate stop loss price based on pips"""
     pip_value = 0.0001
     if side == "buy":
         return price - (pips * pip_value)
@@ -214,7 +207,6 @@ def calculate_stop_loss_price(side, price, pips):
 
 
 def calculate_take_profit_price(side, price, pips):
-    """Calculate take profit price based on pips"""
     pip_value = 0.0001
     if side == "buy":
         return price + (pips * pip_value)
@@ -223,11 +215,7 @@ def calculate_take_profit_price(side, price, pips):
 
 
 def build_oanda_order(symbol, units, action, price, state, strategy="unknown"):
-    """Build and place an OANDA market order with optional SL/TP"""
-    # Convert action to units (positive = buy, negative = sell)
     oanda_units = units if action == "buy" else -units
-    
-    # Get pips settings
     take_profit_pips = float(state.get("take_profit_pips", 50))
     stop_loss_pips = float(state.get("stop_loss_pips", 50))
     
@@ -236,7 +224,6 @@ def build_oanda_order(symbol, units, action, price, state, strategy="unknown"):
         take_profit_pips = float(strategy_brackets[strategy].get("take_profit_pips", take_profit_pips))
         stop_loss_pips = float(strategy_brackets[strategy].get("stop_loss_pips", stop_loss_pips))
     
-    # Calculate SL/TP prices
     sl_price = None
     tp_price = None
     
@@ -251,12 +238,8 @@ def build_oanda_order(symbol, units, action, price, state, strategy="unknown"):
         if take_profit_pips > 0:
             tp_price = calculate_take_profit_price("sell", price, take_profit_pips)
     
-    # Place order via client
     result = client.place_market_order(symbol, oanda_units, sl_price, tp_price)
-    
-    # Extract order ID for tracking
     order_id = result.get("id", "unknown")
-    
     return {"id": order_id, "result": result}
 
 
@@ -271,11 +254,6 @@ def reset_daily_state_if_needed(state):
         write_log("Daily counters reset")
 
 
-def is_forex_symbol(symbol):
-    """Check if symbol is a Forex pair"""
-    return "_" in symbol or (len(symbol) == 6 and symbol.isalpha())
-
-
 def has_open_position(symbol):
     try:
         positions = client.get_open_positions()
@@ -287,69 +265,48 @@ def has_open_position(symbol):
 def validate_trade(state, symbol, action, price, units, strategy="unknown"):
     if state.get("maintenance_mode", False):
         raise ValueError("Maintenance mode is ON")
-
-    paused_until = state.get("paused_until")
-    if paused_until:
-        if datetime.now(timezone.utc) < datetime.fromisoformat(paused_until):
+    if state.get("paused_until"):
+        if datetime.now(timezone.utc) < datetime.fromisoformat(state.get("paused_until")):
             raise ValueError("Bot is paused")
-
     if not state.get("trading_enabled", False):
         raise ValueError("Trading is OFF")
-
     if TRADING_MODE == "live" and not state.get("live_confirmed", False):
         raise ValueError("Live mode not confirmed")
-
-    if TRADING_MODE == "live" and strategy in state.get("paper_only_strategies", []):
-        raise ValueError("Strategy is paper-only")
-
-    if TRADING_MODE == "live" and strategy not in state.get("approved_live_strategies", []):
-        raise ValueError("Strategy not approved for live trading")
-
     if strategy in state.get("disabled_strategies", []):
         raise ValueError("Strategy is disabled")
-
+    
     allowed_symbols = state.get("allowed_symbols", ["EUR_USD", "GBP_USD", "USD_JPY"])
     if symbol not in allowed_symbols:
         raise ValueError(f"Symbol {symbol} not allowed")
-
     if symbol in state.get("blocked_symbols", []):
         raise ValueError("Symbol is blocked")
-
     if action not in ["buy", "sell"]:
         raise ValueError("Bad action")
-
     if float(price) <= 0:
         raise ValueError("Missing or bad price")
-
     if float(units) < 1:
         raise ValueError("Units is less than 1")
-
+    
     max_trades = int(state.get("max_trades_per_day", 5))
     if int(state.get("trade_count", 0)) >= max_trades:
         raise ValueError("Max trades reached today")
-
-    strategy_limits = state.get("strategy_max_trades_per_day", {})
-    strategy_counts = state.get("strategy_trade_counts", {})
-    if strategy in strategy_limits and strategy_counts.get(strategy, 0) >= int(strategy_limits[strategy]):
-        raise ValueError("Strategy max trades reached")
-
+    
     last_trade_time = state.get("last_trade_time")
     if last_trade_time:
         seconds_passed = (datetime.now(timezone.utc) - datetime.fromisoformat(last_trade_time)).total_seconds()
         if seconds_passed < 15 * 60:
             raise ValueError("Cooldown active")
-
-    # Check if Forex market is open (24/5)
+    
     if not is_market_open():
         raise ValueError("Forex market is closed (Friday 5pm - Sunday 5pm ET)")
-
+    
     daily_loss_limit = float(state.get("daily_loss_limit", 50.0))
     if get_daily_pnl() <= -daily_loss_limit:
         state["trading_enabled"] = False
         save_state(state)
         send_telegram_message("Trading turned OFF: daily loss limit hit")
         raise ValueError("Daily loss limit hit")
-
+    
     if action == "buy" and has_open_position(symbol):
         raise ValueError("Already have an open position on this pair")
 
@@ -358,11 +315,11 @@ def handle_successful_trade(state, symbol, action, units, order_id, strategy):
     state["trade_count"] = int(state.get("trade_count", 0)) + 1
     state["last_trade_time"] = datetime.now(timezone.utc).isoformat()
     state["error_count"] = 0
-
+    
     strategy_counts = state.get("strategy_trade_counts", {})
     strategy_counts[strategy] = strategy_counts.get(strategy, 0) + 1
     state["strategy_trade_counts"] = strategy_counts
-
+    
     save_state(state)
     write_log(f"Trade placed | {symbol} {action} units={units} order_id={order_id}")
     send_telegram_message(f"Trade placed\nSymbol: {symbol}\nAction: {action}\nUnits: {units}")
@@ -372,21 +329,17 @@ def record_error(state, error_message):
     state["error_count"] = int(state.get("error_count", 0)) + 1
     state["last_error_time"] = datetime.now(timezone.utc).isoformat()
     state["last_error_message"] = error_message
-
     if state["error_count"] >= 3:
         state["trading_enabled"] = False
         send_telegram_message("Trading turned OFF: too many errors")
-
     save_state(state)
     write_log(f"Error: {error_message}")
 
 
 def create_trade_review(symbol, action, price, strategy, reason):
-    return (
-        f"Strategy: {strategy}. Action: {action}. Symbol: {symbol}. "
-        f"Signal price: {price}. Reason: {reason}. "
-        "Review: trade passed bot safety checks before order submission."
-    )
+    return (f"Strategy: {strategy}. Action: {action}. Symbol: {symbol}. "
+            f"Signal price: {price}. Reason: {reason}. "
+            "Review: trade passed bot safety checks before order submission.")
 
 
 def create_trade_score(symbol, action, price, strategy, reason, state=None):
@@ -399,14 +352,6 @@ def create_trade_score(symbol, action, price, strategy, reason, state=None):
         score += 10
     if action in ["buy", "sell"]:
         score += 10
-    if state:
-        tags = state.get("strategy_tags", {}).get(strategy, [])
-        if "trend" in tags:
-            score += 5
-        if "scalp" in tags:
-            score -= 5
-        if int(state.get("trade_count", 0)) > 3:
-            score -= 10
     return max(0, min(score, 100))
 
 
@@ -414,34 +359,11 @@ def get_open_positions():
     return client.get_open_positions()
 
 
-def get_open_orders():
-    return []
-
-
 def close_all_positions():
     result = client.close_all_positions()
     write_log("Close all positions requested")
     send_telegram_message("Emergency: close all positions requested")
     return result
-
-
-def close_one_position(symbol):
-    result = client.close_position(symbol)
-    write_log(f"Close position requested for {symbol}")
-    send_telegram_message(f"Close position requested for {symbol}")
-    return result
-
-
-def cancel_all_orders():
-    write_log("Cancel all orders requested")
-    send_telegram_message("Cancel all orders requested")
-    return {"status": "not_implemented"}
-
-
-def cancel_one_order(order_id):
-    write_log(f"Cancel order requested: {order_id}")
-    send_telegram_message(f"Cancel order requested: {order_id}")
-    return {"status": "not_implemented"}
 
 
 def make_daily_backup():
@@ -455,134 +377,4 @@ def make_daily_backup():
     write_log("Daily backup completed")
 
 
-def clean_old_backups():
-    backup_folder = "backups"
-    if not os.path.exists(backup_folder):
-        return
-    now = datetime.now(timezone.utc)
-    for file_name in os.listdir(backup_folder):
-        file_path = os.path.join(backup_folder, file_name)
-        if os.path.isfile(file_path):
-            file_time = datetime.fromtimestamp(os.path.getmtime(file_path), timezone.utc)
-            if (now - file_time).days > 30:
-                os.remove(file_path)
-    write_log("Old backups cleaned")
-
-
-# ========== MISSING FUNCTIONS ADDED ==========
-
-def check_heartbeat_warning():
-    state = load_state()
-    last_webhook = state.get("last_webhook_time")
-    if last_webhook:
-        try:
-            last_time = datetime.fromisoformat(last_webhook)
-            if datetime.now() - last_time > timedelta(minutes=30):
-                if not state.get("heartbeat_warning_sent"):
-                    send_telegram_message("⚠️ Warning: No heartbeat webhook received in 30 minutes")
-                    state["heartbeat_warning_sent"] = True
-                    save_state(state)
-        except Exception as e:
-            write_log(f"Heartbeat check error: {e}")
-
-
-def check_market_status_alert():
-    try:
-        is_open = is_market_open()
-        state = load_state()
-        last_status = state.get("last_market_status")
-        if last_status != is_open:
-            status_text = "OPEN" if is_open else "CLOSED"
-            send_telegram_message(f"📊 Market is now {status_text}")
-            state["last_market_status"] = is_open
-            save_state(state)
-    except Exception as e:
-        write_log(f"Market status alert error: {e}")
-
-
-def disable_trading_end_of_day():
-    try:
-        state = load_state()
-        if state.get("trading_enabled"):
-            state["trading_enabled"] = False
-            save_state(state)
-            write_log("Auto-disabled trading at end of day")
-            send_telegram_message("🔴 Trading auto-disabled at market close")
-    except Exception as e:
-        write_log(f"Disable EOD error: {e}")
-
-
-def enable_trading_morning():
-    try:
-        state = load_state()
-        if not state.get("trading_enabled"):
-            state["trading_enabled"] = True
-            save_state(state)
-            write_log("Auto-enabled trading at market open")
-            send_telegram_message("🟢 Trading auto-enabled at market open")
-    except Exception as e:
-        write_log(f"Enable morning error: {e}")
-
-
-def get_heartbeat_status():
-    state = load_state()
-    last_webhook = state.get("last_webhook_time")
-    if not last_webhook:
-        return "No heartbeat received", "warning"
-    try:
-        last_time = datetime.fromisoformat(last_webhook)
-        minutes_ago = (datetime.now() - last_time).total_seconds() / 60
-        if minutes_ago < 5:
-            return f"Healthy ({minutes_ago:.0f} min ago)", "ok"
-        elif minutes_ago < 30:
-            return f"Warning ({minutes_ago:.0f} min ago)", "warning"
-        else:
-            return f"Critical ({minutes_ago:.0f} min ago)", "critical"
-    except Exception:
-        return "Error parsing heartbeat", "error"
-
-
-def send_scheduled_daily_report():
-    try:
-        daily_pnl = get_daily_pnl()
-        state = load_state()
-        report = f"""📊 Daily Trading Report
-Date: {datetime.now().strftime('%Y-%m-%d')}
-Trades Today: {state.get('trade_count', 0)}
-Daily P/L: ${daily_pnl:.2f}
-Trading Enabled: {state.get('trading_enabled', False)}"""
-        send_telegram_message(report)
-        send_daily_email_report(report)
-        write_log("Daily report sent")
-    except Exception as e:
-        write_log(f"Daily report error: {e}")
-
-
-def auto_disable_bad_strategies():
-    try:
-        state = load_state()
-        trades = get_trades_from_db(50)
-        strategy_pnl = {}
-        
-        for trade in trades:
-            strategy = trade.get('strategy')
-            if strategy and strategy not in strategy_pnl:
-                strategy_pnl[strategy] = 0
-            if strategy and trade.get('action') == 'sell':
-                try:
-                    units = float(trade.get('units', 0))
-                    price = float(trade.get('price', 0))
-                    strategy_pnl[strategy] += units * price
-                except:
-                    pass
-        
-        disabled = state.get('disabled_strategies', [])
-        for strategy, pnl in strategy_pnl.items():
-            if pnl < -100 and strategy not in disabled:
-                disabled.append(strategy)
-                send_telegram_message(f"⚠️ Auto-disabled {strategy} due to losses: ${pnl:.2f}")
-        
-        state['disabled_strategies'] = disabled
-        save_state(state)
-    except Exception as e:
-        write_log(f"Auto-disable strategies error: {e}")
+def clean_
