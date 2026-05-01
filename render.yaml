@@ -30,25 +30,16 @@ services:
         sync: false
       
       # ========== AUTONOMOUS STRATEGY SETTINGS ==========
-      # Enable/disable autonomous trading (true/false)
       - key: STRATEGY_ENABLED
         value: "true"
-      
-      # Strategy type: ema_crossover, rsi, macd, multi_timeframe
       - key: STRATEGY_TYPE
         value: "ema_crossover"
-      
-      # How often to check for signals (in minutes)
       - key: STRATEGY_TIMEFRAME
         value: "5"
-      
-      # EMA periods for crossover strategy
       - key: FAST_EMA_PERIOD
         value: "9"
       - key: SLOW_EMA_PERIOD
         value: "21"
-      
-      # RSI settings
       - key: RSI_PERIOD
         value: "14"
       - key: RSI_OVERSOLD
