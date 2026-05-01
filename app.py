@@ -1,4 +1,4 @@
-# app.py - OANDA VERSION - COMPLETE FINAL CORRECTED
+# app.py - COMPLETE WITH AUTONOMOUS TRADING STRATEGY
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from config import DASHBOARD_PASSWORD, TRADING_MODE, WEBHOOK_SECRET
+from config import STRATEGY_ENABLED, STRATEGY_TIMEFRAME
 from helpers import (
     build_oanda_order,
     calculate_units_from_price,
@@ -42,6 +43,7 @@ from helpers import (
     auto_disable_bad_strategies,
 )
 from telegram_bot import check_telegram_commands
+from strategy import execute_autonomous_trade, monitor_open_positions
 
 scheduler = BackgroundScheduler()
 market_timezone = ZoneInfo("America/New_York")
@@ -84,6 +86,7 @@ async def lifespan(app: FastAPI):
     
     init_database()
 
+    # Existing scheduler jobs
     scheduler.add_job(check_telegram_commands, "interval", seconds=5)
     scheduler.add_job(sync_recent_orders, "interval", minutes=2)
     scheduler.add_job(check_heartbeat_warning, "interval", minutes=5)
@@ -93,6 +96,15 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(clean_old_backups, "cron", hour=16, minute=30, timezone=market_timezone)
     scheduler.add_job(disable_trading_end_of_day, "cron", hour=15, minute=45, timezone=market_timezone)
     scheduler.add_job(enable_trading_morning, "cron", hour=9, minute=35, timezone=market_timezone)
+    
+    # Autonomous trading strategy jobs
+    if STRATEGY_ENABLED:
+        interval_minutes = int(STRATEGY_TIMEFRAME)
+        scheduler.add_job(execute_autonomous_trade, "interval", minutes=interval_minutes)
+        scheduler.add_job(monitor_open_positions, "interval", minutes=1)
+        write_log(f"✅ Autonomous strategy enabled - checking every {interval_minutes} minutes")
+    else:
+        write_log("⚠️ Autonomous strategy is DISABLED - set STRATEGY_ENABLED=true to enable")
 
     scheduler.start()
     write_log("✅ APScheduler started successfully")
@@ -137,6 +149,7 @@ def health_check():
         return {
             "status": "healthy",
             "trading_enabled": state.get("trading_enabled", False),
+            "strategy_enabled": STRATEGY_ENABLED,
             "timestamp": datetime.now().isoformat(),
             "scheduler_running": scheduler.running
         }
@@ -283,6 +296,10 @@ def get_notifications(session: str = Cookie(default="")):
     mode_icons = {"forex": "💱", "stocks": "📈", "crypto": "🪙", "both": "🌐"}
     notifications.append({"type": "mode", "message": f"{mode_icons.get(asset_mode, '💱')} Trading: {asset_mode.upper()}", "priority": "low"})
     
+    # Add autonomous strategy status
+    if STRATEGY_ENABLED:
+        notifications.append({"type": "strategy", "message": f"🤖 Auto Strategy: {STRATEGY_TYPE} (every {STRATEGY_TIMEFRAME} min)", "priority": "low"})
+    
     trades = get_trades_from_db(3)
     for trade in trades:
         action_icon = "🟢" if trade.get("action") == "buy" else "🔴"
@@ -317,7 +334,7 @@ def webhook_tester(session: str = Cookie(default="")):
         <form id="testForm">
             <input type="text" id="symbol" placeholder="Symbol (e.g., EUR_USD)" value="EUR_USD">
             <select id="action"><option value="buy">BUY</option><option value="sell">SELL</option><option value="heartbeat">HEARTBEAT</option></select>
-            <input type="text" id="strategy" placeholder="Strategy" value="ema_rsi_v1">
+            <input type="text" id="strategy" placeholder="Strategy" value="ema_crossover_auto">
             <input type="number" id="price" placeholder="Price" value="1.05000" step="0.00001">
             <input type="password" id="secret" placeholder="Webhook Secret">
             <button type="button" onclick="sendWebhook()">🚀 Send Test</button>
@@ -651,7 +668,7 @@ def dashboard(session: str = Cookie(default="")):
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Trading Bot Dashboard - OANDA</title>
+        <title>Trading Bot Dashboard - Autonomous</title>
         <style>
             * {{ margin: 0; padding: 0; box-sizing: border-box; }}
             body {{
@@ -754,11 +771,12 @@ def dashboard(session: str = Cookie(default="")):
             hr {{ margin: 15px 0; border-color: rgba(255,255,255,0.1); }}
             .section-title {{ font-size: 0.9rem; color: #00d4ff; margin: 10px 0 5px 0; }}
             .live-badge {{ background: #d32f2f; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; }}
+            .auto-badge {{ background: #00c853; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; margin-left: 10px; }}
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>🤖 Trading Bot Dashboard <span class="live-badge">OANDA</span></h1>
+            <h1>🤖 Trading Bot Dashboard <span class="live-badge">OANDA</span><span class="auto-badge">AUTONOMOUS</span></h1>
             
             <div class="notification-bar">
                 <span>📢 Notifications:</span>
@@ -781,6 +799,9 @@ def dashboard(session: str = Cookie(default="")):
                     </div>
                     <div style="margin-top: 10px;">
                         <span class="status-badge mode-{asset_mode}">{mode_text}</span>
+                    </div>
+                    <div style="margin-top: 10px;">
+                        <span class="status-badge" style="background: #00c853;">🤖 Auto Strategy: {STRATEGY_TYPE} ({STRATEGY_TIMEFRAME}min)</span>
                     </div>
                 </div>
                 
@@ -849,7 +870,7 @@ def dashboard(session: str = Cookie(default="")):
                 <div style="overflow-x: auto;">
                     <table id="weeklyTable">
                         <thead><tr><th>Date</th><th>P&L</th><th>Trades</th><th>Win Rate</th></tr></thead>
-                        <tbody id="weeklyTableBody"><tr><td colspan="4">Loading...</td></tr></tbody>
+                        <tbody id="weeklyTableBody"><tr><td colspan="4">Loading...</td></tr>
                     </table>
                 </div>
             </div>
@@ -871,6 +892,7 @@ def dashboard(session: str = Cookie(default="")):
                 <h3>ℹ️ Info</h3>
                 <div>Broker: OANDA</div>
                 <div>Mode: {TRADING_MODE.upper()}</div>
+                <div>Strategy: {STRATEGY_TYPE.upper()} (auto every {STRATEGY_TIMEFRAME} min)</div>
                 <div>Last Reset: {state.get('last_reset_date', 'Never')}</div>
                 <div>Disabled Strategies: {', '.join(state.get('disabled_strategies', [])) or 'None'}</div>
             </div>
