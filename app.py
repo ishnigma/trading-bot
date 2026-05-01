@@ -1,4 +1,4 @@
-# app.py - COMPLETE WITH FOREX OVERRIDE TOGGLE
+# app.py - COMPLETE WITH WORKING FOREX OVERRIDE
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -294,6 +294,7 @@ def get_api_symbols(session: str = Cookie(default="")):
 def toggle_forex_override(session: str = Cookie(default="")):
     if not is_logged_in(session):
         raise HTTPException(401, "Not logged in")
+    
     state = load_state()
     current = state.get("force_forex_trading", False)
     state["force_forex_trading"] = not current
@@ -301,9 +302,13 @@ def toggle_forex_override(session: str = Cookie(default="")):
     
     status = "ENABLED" if state["force_forex_trading"] else "DISABLED"
     write_log(f"Forex market override {status}")
-    send_telegram_message(f"🔧 Forex market override {status}")
     
-    return RedirectResponse("/dashboard", 303)
+    try:
+        send_telegram_message(f"🔧 Forex market override {status}")
+    except:
+        pass
+    
+    return RedirectResponse(url="/dashboard", status_code=303)
 
 
 @app.get("/api/forex-override")
@@ -869,36 +874,41 @@ def dashboard(session: str = Cookie(default="")):
                     .then(data => {{
                         const statusSpan = document.getElementById('forexOverrideStatus');
                         const btn = document.getElementById('forexOverrideBtn');
-                        if (data.force_forex_trading) {{
-                            if (statusSpan) {{
+                        if (statusSpan) {{
+                            if (data.force_forex_trading) {{
                                 statusSpan.innerHTML = '⚠️ OVERRIDE ACTIVE (24/7 Mode)';
                                 statusSpan.className = 'status-badge status-warning';
-                            }}
-                            if (btn) btn.innerHTML = '🔒 Disable Override';
-                        }} else {{
-                            if (statusSpan) {{
+                            }} else {{
                                 statusSpan.innerHTML = '✅ Normal Hours Only';
                                 statusSpan.className = 'status-badge status-enabled';
                             }}
-                            if (btn) btn.innerHTML = '🔓 Force Enable 24/7';
+                        }}
+                        if (btn) {{
+                            if (data.force_forex_trading) {{
+                                btn.innerHTML = '🔒 Disable Override';
+                            }} else {{
+                                btn.innerHTML = '🔓 Force Enable 24/7';
+                            }}
                         }}
                     }})
                     .catch(err => console.log('Forex override refresh error:', err));
             }}
             
             function refreshMarketStatus() {{
-                fetch('/api/notifications')
-                    .then(r => r.json())
-                    .then(data => {{
-                        const marketSpan = document.getElementById('marketStatusDisplay');
-                        if (marketSpan && data.notifications) {{
-                            const marketNotif = data.notifications.find(n => n.type === 'market');
-                            if (marketNotif) {{
-                                marketSpan.innerHTML = marketNotif.message;
+                const marketSpan = document.getElementById('marketStatusDisplay');
+                if (marketSpan) {{
+                    fetch('/api/notifications')
+                        .then(r => r.json())
+                        .then(data => {{
+                            if (data.notifications) {{
+                                const marketNotif = data.notifications.find(n => n.type === 'market');
+                                if (marketNotif) {{
+                                    marketSpan.innerHTML = marketNotif.message;
+                                }}
                             }}
-                        }}
-                    }})
-                    .catch(err => console.log('Market status refresh error:', err));
+                        }})
+                        .catch(err => console.log('Market status refresh error:', err));
+                }}
             }}
             
             setInterval(() => {{
