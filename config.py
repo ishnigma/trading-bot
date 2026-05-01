@@ -1,4 +1,4 @@
-# config.py - UPDATED FOR OANDA
+# config.py - OANDA VERSION
 import os
 from dotenv import load_dotenv
 
@@ -67,13 +67,13 @@ DEFAULT_STATE = {
     "heartbeat_warning_sent": False,
     "last_market_status": None,
     "paused_until": None,
-    "asset_mode": "forex",  # Changed from stocks to forex
+    "asset_mode": "forex",
     "allowed_symbols": ["EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD", "NZD_USD", "USD_CHF"],
     "blocked_symbols": [],
-    "max_units_per_trade": 10000,  # OANDA uses units instead of dollars/shares
+    "max_units_per_trade": 10000,
     "max_trades_per_day": 5,
     "daily_loss_limit": 50.0,
-    "take_profit_pips": 50,  # Pips instead of percent
+    "take_profit_pips": 50,
     "stop_loss_pips": 50,
     "minimum_trade_score": 70,
     "paper_only_strategies": ["test_strategy"],
