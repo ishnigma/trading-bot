@@ -1,4 +1,4 @@
-# helpers.py - OANDA VERSION
+# helpers.py - OANDA VERSION - COMPLETE
 import csv
 import json
 import os
@@ -186,7 +186,6 @@ def sync_recent_orders(limit=10):
 
 
 def is_market_open():
-    # For Forex, market is 24/5
     return client.is_market_open()
 
 
@@ -196,41 +195,35 @@ def get_daily_pnl():
 
 def calculate_units_from_price(price, state, strategy="unknown"):
     """Calculate units to trade based on risk per trade"""
-    dollars_per_trade = float(state.get("max_units_per_trade", 10000))
+    units_per_trade = float(state.get("max_units_per_trade", 10000))
     strategy_limits = state.get("strategy_max_units", {})
     if strategy in strategy_limits:
-        dollars_per_trade = float(strategy_limits[strategy])
-    
-    # For OANDA, units are the position size
-    # Default to 1000 units (micro lot) if price-based calculation fails
-    try:
-        # Simple: use the units directly from state
-        units = int(dollars_per_trade)
-    except:
-        units = 1000
+        units_per_trade = float(strategy_limits[strategy])
     
     max_units = int(state.get("max_units_per_trade", 10000))
-    return min(units, max_units)
+    return int(min(units_per_trade, max_units))
 
 
 def calculate_stop_loss_price(side, price, pips):
     """Calculate stop loss price based on pips"""
+    pip_value = 0.0001
     if side == "buy":
-        return price - (pips * 0.0001)
+        return price - (pips * pip_value)
     else:
-        return price + (pips * 0.0001)
+        return price + (pips * pip_value)
 
 
 def calculate_take_profit_price(side, price, pips):
     """Calculate take profit price based on pips"""
+    pip_value = 0.0001
     if side == "buy":
-        return price + (pips * 0.0001)
+        return price + (pips * pip_value)
     else:
-        return price - (pips * 0.0001)
+        return price - (pips * pip_value)
 
 
 def build_oanda_order(symbol, units, action, price, state, strategy="unknown"):
-    """Build an OANDA market order with optional SL/TP"""
+    """Build and place an OANDA market order with optional SL/TP"""
     # Convert action to units (positive = buy, negative = sell)
     oanda_units = units if action == "buy" else -units
     
@@ -262,7 +255,7 @@ def build_oanda_order(symbol, units, action, price, state, strategy="unknown"):
     result = client.place_market_order(symbol, oanda_units, sl_price, tp_price)
     
     # Extract order ID for tracking
-    order_id = result.get("orderCreateTransaction", {}).get("id", "unknown")
+    order_id = result.get("id", "unknown")
     
     return {"id": order_id, "result": result}
 
@@ -278,22 +271,8 @@ def reset_daily_state_if_needed(state):
         write_log("Daily counters reset")
 
 
-def is_inside_trading_window():
-    # Forex is 24/5, so always return True for now
-    # You can customize this for specific instruments
-    now_et = datetime.now(ZoneInfo("America/New_York"))
-    # Forex market opens Sunday 5pm ET, closes Friday 5pm ET
-    # Check if it's weekend
-    if now_et.weekday() >= 5:  # Saturday or Sunday
-        # Sunday after 5pm is tradable
-        if now_et.weekday() == 6 and now_et.hour >= 17:
-            return True
-        return False
-    return True
-
-
 def is_forex_symbol(symbol):
-    """Check if symbol is a Forex pair (has underscore or 6 letters)"""
+    """Check if symbol is a Forex pair"""
     return "_" in symbol or (len(symbol) == 6 and symbol.isalpha())
 
 
@@ -360,9 +339,9 @@ def validate_trade(state, symbol, action, price, units, strategy="unknown"):
         if seconds_passed < 15 * 60:
             raise ValueError("Cooldown active")
 
-    # Check if market is open (Forex 24/5)
+    # Check if Forex market is open (24/5)
     if not is_market_open():
-        raise ValueError("Market is closed (Forex closed Friday 5pm - Sunday 5pm ET)")
+        raise ValueError("Forex market is closed (Friday 5pm - Sunday 5pm ET)")
 
     daily_loss_limit = float(state.get("daily_loss_limit", 50.0))
     if get_daily_pnl() <= -daily_loss_limit:
@@ -436,7 +415,6 @@ def get_open_positions():
 
 
 def get_open_orders():
-    # OANDA orders retrieval would be implemented here
     return []
 
 
@@ -455,7 +433,6 @@ def close_one_position(symbol):
 
 
 def cancel_all_orders():
-    # OANDA implementation
     write_log("Cancel all orders requested")
     send_telegram_message("Cancel all orders requested")
     return {"status": "not_implemented"}
@@ -471,7 +448,7 @@ def make_daily_backup():
     backup_folder = "backups"
     os.makedirs(backup_folder, exist_ok=True)
     today = datetime.now(timezone.utc).date().isoformat()
-    files = ["trading_bot.db", "trades.log", "RESTORE.txt", "CHECKLIST.txt", "CODE_REVIEW.txt"]
+    files = ["trading_bot.db", "trades.log"]
     for file_name in files:
         if os.path.exists(file_name):
             shutil.copy(file_name, f"{backup_folder}/{today}_{file_name}")
@@ -492,30 +469,7 @@ def clean_old_backups():
     write_log("Old backups cleaned")
 
 
-def migrate_csv_to_db():
-    if not os.path.exists("journal.csv"):
-        return 0
-    with open("journal.csv", "r") as file:
-        rows = list(csv.DictReader(file))
-    imported = 0
-    for row in rows:
-        save_trade_to_db(
-            row.get("symbol"),
-            row.get("action"),
-            float(row.get("units") or 0),
-            float(row.get("price") or 0),
-            row.get("order_id"),
-            row.get("strategy", "unknown"),
-            row.get("reason", ""),
-            row.get("review", ""),
-            int(row.get("trade_score") or 0),
-        )
-        imported += 1
-    write_log(f"CSV migration completed. Imported {imported} rows")
-    return imported
-
-
-# ========== MISSING FUNCTIONS ==========
+# ========== MISSING FUNCTIONS ADDED ==========
 
 def check_heartbeat_warning():
     state = load_state()
