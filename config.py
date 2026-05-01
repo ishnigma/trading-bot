@@ -1,4 +1,4 @@
-# config.py - OANDA VERSION
+# config.py - OANDA VERSION WITH AUTONOMOUS STRATEGY
 import os
 from dotenv import load_dotenv
 
@@ -15,6 +15,16 @@ DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD")
 
 # ========== TRADING MODE ==========
 TRADING_MODE = os.getenv("TRADING_MODE", "paper").lower()
+
+# ========== AUTONOMOUS STRATEGY SETTINGS ==========
+STRATEGY_ENABLED = os.getenv("STRATEGY_ENABLED", "false").lower() == "true"
+STRATEGY_TYPE = os.getenv("STRATEGY_TYPE", "ema_crossover")  # ema_crossover, rsi, macd
+STRATEGY_TIMEFRAME = os.getenv("STRATEGY_TIMEFRAME", "5")  # Minutes between checks
+FAST_EMA_PERIOD = int(os.getenv("FAST_EMA_PERIOD", "9"))
+SLOW_EMA_PERIOD = int(os.getenv("SLOW_EMA_PERIOD", "21"))
+RSI_PERIOD = int(os.getenv("RSI_PERIOD", "14"))
+RSI_OVERSOLD = int(os.getenv("RSI_OVERSOLD", "30"))
+RSI_OVERBOUGHT = int(os.getenv("RSI_OVERBOUGHT", "70"))
 
 # Validate required variables
 required_vars = {
@@ -47,7 +57,7 @@ EMAIL_TO = os.getenv("EMAIL_TO", "")
 STATE_FILE = "state.json"
 LOG_FILE = "trades.log"
 DB_FILE = "trading_bot.db"
-BOT_VERSION = "2.0.0"  # OANDA version
+BOT_VERSION = "2.0.0"
 
 # ========== DEFAULT STATE ==========
 DEFAULT_STATE = {
@@ -77,18 +87,23 @@ DEFAULT_STATE = {
     "stop_loss_pips": 50,
     "minimum_trade_score": 70,
     "paper_only_strategies": ["test_strategy"],
-    "approved_live_strategies": ["ema_rsi_v1"],
-    "strategy_max_units": {"ema_rsi_v1": 10000},
+    "approved_live_strategies": ["ema_crossover_auto"],
+    "strategy_max_units": {"ema_crossover_auto": 10000},
     "strategy_bracket_settings": {
-        "ema_rsi_v1": {"take_profit_pips": 50, "stop_loss_pips": 50}
+        "ema_crossover_auto": {"take_profit_pips": 50, "stop_loss_pips": 50}
     },
     "strategy_trade_counts": {},
-    "strategy_max_trades_per_day": {"ema_rsi_v1": 3},
+    "strategy_max_trades_per_day": {"ema_crossover_auto": 3},
     "disabled_strategies": [],
-    "strategy_daily_loss_limit": {"ema_rsi_v1": 25.0},
-    "strategy_notes": {"ema_rsi_v1": "EMA trend with RSI filter"},
-    "strategy_tags": {"ema_rsi_v1": ["trend", "rsi"]},
+    "strategy_daily_loss_limit": {"ema_crossover_auto": 25.0},
+    "strategy_notes": {"ema_crossover_auto": "EMA crossover autonomous strategy"},
+    "strategy_tags": {"ema_crossover_auto": ["trend", "auto"]},
     "strategy_presets": {},
     "last_backtest_time": None,
-    "last_backtest_status": None
+    "last_backtest_status": None,
+    # Autonomous strategy tracking
+    "last_strategy_check": None,
+    "last_signal": None,
+    "position_open": False,
+    "current_position_symbol": None,
 }
