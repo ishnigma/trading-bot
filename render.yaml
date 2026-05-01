@@ -15,6 +15,7 @@ services:
         sync: false
       - key: ALPACA_SECRET_KEY
         sync: false
+      # Optional - remove if not using Telegram
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_CHAT_ID
