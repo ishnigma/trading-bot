@@ -20,4 +20,14 @@ services:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_CHAT_ID
-        sync: false 
+        sync: false
+      - key: STRATEGY_ENABLED
+        value: "true"
+      - key: STRATEGY_TYPE
+        value: "ema_crossover"
+      - key: STRATEGY_TIMEFRAME
+        value: "5"
+      - key: FAST_EMA_PERIOD
+        value: "9"
+      - key: SLOW_EMA_PERIOD
+        value: "21"
