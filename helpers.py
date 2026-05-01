@@ -1,4 +1,4 @@
-# helpers.py - OANDA VERSION - COMPLETE
+# helpers.py - COMPLETE WITH FOREX OVERRIDE
 import csv
 import json
 import os
@@ -297,8 +297,14 @@ def validate_trade(state, symbol, action, price, units, strategy="unknown"):
         if seconds_passed < 15 * 60:
             raise ValueError("Cooldown active")
     
-    if not is_market_open():
-        raise ValueError("Forex market is closed (Friday 5pm - Sunday 5pm ET)")
+    # ========== FOREX MARKET HOURS CHECK WITH OVERRIDE ==========
+    force_forex_trading = state.get("force_forex_trading", False)
+    
+    if not force_forex_trading:
+        if not is_market_open():
+            raise ValueError("Forex market is closed (Friday 5pm - Sunday 5pm ET)")
+    else:
+        write_log(f"⚠️ FOREX MARKET OVERRIDE ACTIVE - Trading {symbol} despite market hours")
     
     daily_loss_limit = float(state.get("daily_loss_limit", 50.0))
     if get_daily_pnl() <= -daily_loss_limit:
