@@ -1,4 +1,4 @@
-# app.py - COMPLETE FINAL VERSION WITH ALL FEATURES (FIXED)
+# app.py - OANDA VERSION - COMPLETE FINAL CORRECTED
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -11,8 +11,8 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from config import DASHBOARD_PASSWORD, TRADING_MODE, WEBHOOK_SECRET
 from helpers import (
-    build_bracket_order,
-    calculate_qty_from_price,
+    build_oanda_order,
+    calculate_units_from_price,
     check_heartbeat_warning,
     check_market_status_alert,
     clean_old_backups,
@@ -159,9 +159,9 @@ def get_profit_metrics(session: str = Cookie(default="")):
     daily_pnl = get_daily_pnl()
     
     try:
-        account = client.get_account()
-        current_equity = float(account.equity)
-        buying_power = float(account.buying_power)
+        account_summary = client.get_account_summary()
+        current_equity = float(account_summary.get('account', {}).get('balance', 10000))
+        buying_power = float(account_summary.get('account', {}).get('nav', 10000))
     except:
         current_equity = 10000
         buying_power = 10000
@@ -184,7 +184,7 @@ def get_profit_metrics(session: str = Cookie(default="")):
         if trade.get('action') == 'sell':
             try:
                 trade_date = datetime.fromisoformat(trade.get('time', '')).date()
-                pnl = float(trade.get('qty', 0)) * float(trade.get('price', 0))
+                pnl = float(trade.get('units', 0)) * float(trade.get('price', 0))
                 
                 if (today - trade_date).days <= 7:
                     weekly_pnl += pnl
@@ -206,15 +206,6 @@ def get_profit_metrics(session: str = Cookie(default="")):
     
     weekly_win_rate = (weekly_wins / weekly_trades * 100) if weekly_trades > 0 else 0
     
-    usdt_balance = buying_power
-    try:
-        positions = get_open_positions()
-        for pos in positions:
-            if "/" in pos.get("symbol", ""):
-                usdt_balance += float(pos.get("market_value", 0))
-    except:
-        pass
-    
     return {
         "daily_pnl": round(daily_pnl, 2),
         "daily_percent": round(daily_percent, 2),
@@ -225,7 +216,7 @@ def get_profit_metrics(session: str = Cookie(default="")):
         "monthly_trades": monthly_trades,
         "current_equity": round(current_equity, 2),
         "buying_power": round(buying_power, 2),
-        "usdt_balance": round(usdt_balance, 2),
+        "usdt_balance": round(buying_power, 2),
         "best_trade": round(best_trade, 2),
         "best_trade_symbol": best_trade_symbol,
         "worst_trade": round(worst_trade, 2),
@@ -250,7 +241,7 @@ def get_weekly_breakdown(session: str = Cookie(default="")):
             try:
                 trade_date = datetime.fromisoformat(trade.get('time', '')).date()
                 if trade_date >= today - timedelta(days=7):
-                    pnl = float(trade.get('qty', 0)) * float(trade.get('price', 0))
+                    pnl = float(trade.get('units', 0)) * float(trade.get('price', 0))
                     date_str = trade_date.isoformat()
                     if date_str in daily_breakdown:
                         daily_breakdown[date_str]["pnl"] += pnl
@@ -288,9 +279,9 @@ def get_notifications(session: str = Cookie(default="")):
     except:
         pass
     
-    asset_mode = state.get("asset_mode", "stocks")
-    mode_icons = {"stocks": "📈", "crypto": "🪙", "both": "🌐"}
-    notifications.append({"type": "mode", "message": f"{mode_icons.get(asset_mode, '📈')} Trading: {asset_mode.upper()}", "priority": "low"})
+    asset_mode = state.get("asset_mode", "forex")
+    mode_icons = {"forex": "💱", "stocks": "📈", "crypto": "🪙", "both": "🌐"}
+    notifications.append({"type": "mode", "message": f"{mode_icons.get(asset_mode, '💱')} Trading: {asset_mode.upper()}", "priority": "low"})
     
     trades = get_trades_from_db(3)
     for trade in trades:
@@ -324,10 +315,10 @@ def webhook_tester(session: str = Cookie(default="")):
     <body>
         <h2>📡 Webhook Test Tool</h2>
         <form id="testForm">
-            <input type="text" id="symbol" placeholder="Symbol (e.g., AAPL)" value="AAPL">
+            <input type="text" id="symbol" placeholder="Symbol (e.g., EUR_USD)" value="EUR_USD">
             <select id="action"><option value="buy">BUY</option><option value="sell">SELL</option><option value="heartbeat">HEARTBEAT</option></select>
             <input type="text" id="strategy" placeholder="Strategy" value="ema_rsi_v1">
-            <input type="number" id="price" placeholder="Price" value="150.00">
+            <input type="number" id="price" placeholder="Price" value="1.05000" step="0.00001">
             <input type="password" id="secret" placeholder="Webhook Secret">
             <button type="button" onclick="sendWebhook()">🚀 Send Test</button>
         </form>
@@ -374,7 +365,7 @@ def export_trades(session: str = Cookie(default="")):
     from io import StringIO
     
     output = StringIO()
-    writer = csv.DictWriter(output, fieldnames=["time", "symbol", "action", "qty", "price", "strategy", "reason", "trade_score"])
+    writer = csv.DictWriter(output, fieldnames=["time", "symbol", "action", "units", "price", "strategy", "reason", "trade_score"])
     writer.writeheader()
     
     for trade in trades:
@@ -382,7 +373,7 @@ def export_trades(session: str = Cookie(default="")):
             "time": trade.get("time", ""),
             "symbol": trade.get("symbol", ""),
             "action": trade.get("action", ""),
-            "qty": trade.get("qty", ""),
+            "units": trade.get("units", ""),
             "price": trade.get("price", ""),
             "strategy": trade.get("strategy", ""),
             "reason": trade.get("reason", ""),
@@ -451,8 +442,8 @@ def toggle_asset_mode(session: str = Cookie(default="")):
     if not is_logged_in(session):
         raise HTTPException(401, "Not logged in")
     state = load_state()
-    modes = ["stocks", "crypto", "both"]
-    current = state.get("asset_mode", "stocks")
+    modes = ["forex", "stocks", "crypto", "both"]
+    current = state.get("asset_mode", "forex")
     current_idx = modes.index(current) if current in modes else 0
     next_mode = modes[(current_idx + 1) % len(modes)]
     state["asset_mode"] = next_mode
@@ -495,10 +486,12 @@ def update_allowed_symbols(
     if not is_logged_in(session):
         raise HTTPException(401, "Not logged in")
     state = load_state()
-    current_symbols = state.get("allowed_symbols", ["AAPL", "TSLA", "SPY"])
+    current_symbols = state.get("allowed_symbols", ["EUR_USD", "GBP_USD", "USD_JPY"])
     
     if add_symbol and add_symbol.strip():
         new_symbol = add_symbol.strip().upper()
+        if "_" not in new_symbol and len(new_symbol) == 6:
+            new_symbol = f"{new_symbol[:3]}_{new_symbol[3:]}"
         if new_symbol not in current_symbols:
             current_symbols.append(new_symbol)
     
@@ -516,8 +509,10 @@ def toggle_symbol(session: str = Cookie(default=""), symbol: str = ""):
     if not is_logged_in(session):
         raise HTTPException(401, "Not logged in")
     state = load_state()
-    current = state.get("allowed_symbols", ["AAPL", "TSLA", "SPY"])
+    current = state.get("allowed_symbols", ["EUR_USD", "GBP_USD", "USD_JPY"])
     symbol = symbol.upper()
+    if "_" not in symbol and len(symbol) == 6:
+        symbol = f"{symbol[:3]}_{symbol[3:]}"
     
     if symbol in current:
         current.remove(symbol)
@@ -531,26 +526,26 @@ def toggle_symbol(session: str = Cookie(default=""), symbol: str = ""):
 @app.post("/update-risk-settings")
 def update_risk_settings(
     session: str = Cookie(default=""),
-    max_dollars_per_trade: float = Form(None),
+    max_units_per_trade: int = Form(None),
     max_trades_per_day: int = Form(None),
     daily_loss_limit: float = Form(None),
-    take_profit_percent: float = Form(None),
-    stop_loss_percent: float = Form(None),
+    take_profit_pips: int = Form(None),
+    stop_loss_pips: int = Form(None),
 ):
     if not is_logged_in(session):
         raise HTTPException(401, "Not logged in")
     state = load_state()
     
-    if max_dollars_per_trade is not None:
-        state["max_dollars_per_trade"] = max_dollars_per_trade
+    if max_units_per_trade is not None:
+        state["max_units_per_trade"] = max_units_per_trade
     if max_trades_per_day is not None:
         state["max_trades_per_day"] = max_trades_per_day
     if daily_loss_limit is not None:
         state["daily_loss_limit"] = daily_loss_limit
-    if take_profit_percent is not None:
-        state["take_profit_percent"] = take_profit_percent
-    if stop_loss_percent is not None:
-        state["stop_loss_percent"] = stop_loss_percent
+    if take_profit_pips is not None:
+        state["take_profit_pips"] = take_profit_pips
+    if stop_loss_pips is not None:
+        state["stop_loss_pips"] = stop_loss_pips
     
     save_state(state)
     return RedirectResponse("/dashboard", 303)
@@ -583,7 +578,11 @@ async def webhook(request: Request):
     if action == "heartbeat":
         return {"ok": True}
 
-    qty = float(data.get("qty") or calculate_qty_from_price(price, state, strategy))
+    # Convert symbol format if needed
+    if "_" not in symbol and len(symbol) == 6:
+        symbol = f"{symbol[:3]}_{symbol[3:]}"
+
+    units = float(data.get("units") or calculate_units_from_price(price, state, strategy))
 
     try:
         review = create_trade_review(symbol, action, price, strategy, reason)
@@ -594,15 +593,16 @@ async def webhook(request: Request):
 
         auto_disable_bad_strategies()
         state = load_state()
-        validate_trade(state, symbol, action, price, qty, strategy)
+        validate_trade(state, symbol, action, price, units, strategy)
 
-        order = build_bracket_order(symbol, qty, action, price, state, strategy)
-        placed_order = client.submit_order(order_data=order)
+        order_result = build_oanda_order(symbol, units, action, price, state, strategy)
+        placed_order = order_result
+        order_id = placed_order.get('id', 'unknown')
 
-        handle_successful_trade(state, symbol, action, qty, placed_order.id, strategy)
-        save_trade_to_db(symbol, action, qty, price, placed_order.id, strategy, reason, review, trade_score)
+        handle_successful_trade(state, symbol, action, units, order_id, strategy)
+        save_trade_to_db(symbol, action, units, price, order_id, strategy, reason, review, trade_score)
 
-        return {"ok": True, "symbol": symbol, "action": action, "qty": qty}
+        return {"ok": True, "symbol": symbol, "action": action, "units": units}
     except ValueError as e:
         record_error(state, str(e))
         raise HTTPException(status_code=400, detail=str(e))
@@ -639,13 +639,11 @@ def dashboard(session: str = Cookie(default="")):
         heartbeat_status = "Error checking status"
         positions = []
 
-    asset_mode = state.get("asset_mode", "stocks")
-    allowed_symbols = state.get("allowed_symbols", ["AAPL", "TSLA", "SPY"])
-    stock_symbols = [s for s in allowed_symbols if "/" not in s]
-    crypto_symbols = [s for s in allowed_symbols if "/" in s]
+    asset_mode = state.get("asset_mode", "forex")
+    allowed_symbols = state.get("allowed_symbols", ["EUR_USD", "GBP_USD", "USD_JPY"])
     
-    mode_display = {"stocks": "📈 Stocks Only", "crypto": "🪙 Crypto Only", "both": "🌐 Both Markets"}
-    mode_text = mode_display.get(asset_mode, "📈 Stocks Only")
+    mode_display = {"forex": "💱 Forex", "stocks": "📈 Stocks", "crypto": "🪙 Crypto", "both": "🌐 Both Markets"}
+    mode_text = mode_display.get(asset_mode, "💱 Forex")
 
     return f"""
     <!DOCTYPE html>
@@ -653,7 +651,7 @@ def dashboard(session: str = Cookie(default="")):
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Trading Bot Dashboard</title>
+        <title>Trading Bot Dashboard - OANDA</title>
         <style>
             * {{ margin: 0; padding: 0; box-sizing: border-box; }}
             body {{
@@ -716,7 +714,8 @@ def dashboard(session: str = Cookie(default="")):
             .status-disabled {{ background: #d32f2f; color: white; }}
             .status-open {{ background: #00c853; color: white; }}
             .status-closed {{ background: #ff6d00; color: white; }}
-            .mode-stocks {{ background: #2196f3; }}
+            .mode-forex {{ background: #2196f3; }}
+            .mode-stocks {{ background: #4caf50; }}
             .mode-crypto {{ background: #9c27b0; }}
             .mode-both {{ background: #00bcd4; }}
             
@@ -759,7 +758,7 @@ def dashboard(session: str = Cookie(default="")):
     </head>
     <body>
         <div class="container">
-            <h1>🤖 Trading Bot Dashboard <span class="live-badge">LIVE</span></h1>
+            <h1>🤖 Trading Bot Dashboard <span class="live-badge">OANDA</span></h1>
             
             <div class="notification-bar">
                 <span>📢 Notifications:</span>
@@ -800,7 +799,7 @@ def dashboard(session: str = Cookie(default="")):
                     <div class="metric-label">Weekly Total</div>
                     <div id="dailyPercentDisplay" style="font-size: 0.9rem;">--% today</div>
                     <hr>
-                    <div>💰 USDT Balance: $<span id="usdtBalance">--</span></div>
+                    <div>💰 Balance: $<span id="usdtBalance">--</span></div>
                     <div>🏆 Best Trade: <span id="bestTrade">--</span></div>
                 </div>
             </div>
@@ -823,16 +822,12 @@ def dashboard(session: str = Cookie(default="")):
             <div class="card">
                 <h3>🔍 Symbol Filter</h3>
                 <form method="post" action="/update-allowed-symbols" class="flex">
-                    <input type="text" name="add_symbol" placeholder="Add symbol (e.g., MSFT, DOGE/USD)" style="flex:1; padding:10px; border-radius:8px; background:rgba(255,255,255,0.2); color:white; border:none;">
+                    <input type="text" name="add_symbol" placeholder="Add symbol (e.g., EUR_USD, GBP_USD)" style="flex:1; padding:10px; border-radius:8px; background:rgba(255,255,255,0.2); color:white; border:none;">
                     <button type="submit">➕ Add</button>
                 </form>
-                <div class="section-title">📈 Stocks:</div>
+                <div class="section-title">💱 Forex Pairs:</div>
                 <div class="flex">
-                    {''.join([f'<div class="symbol-tag">{s}<form method="post" action="/toggle-symbol/{s}" style="display:inline;"><button type="submit">✕</button></form></div>' for s in stock_symbols])}
-                </div>
-                <div class="section-title">🪙 Crypto:</div>
-                <div class="flex">
-                    {''.join([f'<div class="symbol-tag">{s}<form method="post" action="/toggle-symbol/{s}" style="display:inline;"><button type="submit">✕</button></form></div>' for s in crypto_symbols])}
+                    {''.join([f'<div class="symbol-tag">{s}<form method="post" action="/toggle-symbol/{s}" style="display:inline;"><button type="submit">✕</button></form></div>' for s in allowed_symbols])}
                 </div>
             </div>
             
@@ -840,9 +835,10 @@ def dashboard(session: str = Cookie(default="")):
                 <h3>⚙️ Risk Settings</h3>
                 <form method="post" action="/update-risk-settings">
                     <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));">
-                        <div><label>Max $/trade:</label><input type="number" name="max_dollars_per_trade" value="{state.get('max_dollars_per_trade', 50)}" step="10" style="width:100%; padding:8px; background:rgba(255,255,255,0.2); border:none; border-radius:6px; color:white;"></div>
+                        <div><label>Max Units/trade:</label><input type="number" name="max_units_per_trade" value="{state.get('max_units_per_trade', 10000)}" step="1000" style="width:100%; padding:8px; background:rgba(255,255,255,0.2); border:none; border-radius:6px; color:white;"></div>
                         <div><label>Max trades/day:</label><input type="number" name="max_trades_per_day" value="{state.get('max_trades_per_day', 5)}" step="1" style="width:100%; padding:8px; background:rgba(255,255,255,0.2); border:none; border-radius:6px; color:white;"></div>
-                        <div><label>Stop Loss %:</label><input type="number" name="stop_loss_percent" value="{state.get('stop_loss_percent', 1.0)}" step="0.5" style="width:100%; padding:8px; background:rgba(255,255,255,0.2); border:none; border-radius:6px; color:white;"></div>
+                        <div><label>Stop Loss (pips):</label><input type="number" name="stop_loss_pips" value="{state.get('stop_loss_pips', 50)}" step="5" style="width:100%; padding:8px; background:rgba(255,255,255,0.2); border:none; border-radius:6px; color:white;"></div>
+                        <div><label>Take Profit (pips):</label><input type="number" name="take_profit_pips" value="{state.get('take_profit_pips', 50)}" step="5" style="width:100%; padding:8px; background:rgba(255,255,255,0.2); border:none; border-radius:6px; color:white;"></div>
                     </div>
                     <button type="submit">💾 Save Settings</button>
                 </form>
@@ -865,14 +861,15 @@ def dashboard(session: str = Cookie(default="")):
                     <button type="submit" class="danger">🚨 Close All</button>
                 </form>
                 <table>
-                    <tr><th>Symbol</th><th>Qty</th><th>Entry</th><th>Unrealized P/L</th></tr>
-                    {''.join([f'<tr><td>{p["symbol"]}</td><td>{p["qty"]}</td><td>${float(p["avg_entry_price"]):.2f}</td><td style="color: {"#00c853" if float(p["unrealized_pl"]) > 0 else "#d32f2f"}">${float(p["unrealized_pl"]):.2f}</td></tr>' for p in positions])}
+                    <tr><th>Symbol</th><th>Units</th><th>Entry</th><th>Current P/L</th></tr>
+                    {''.join([f'<tr><td>{p["symbol"]}</td><td>{p["qty"]}</td><td>${float(p["avg_entry_price"]):.5f}</td><td style="color: {"#00c853" if float(p["unrealized_pl"]) > 0 else "#d32f2f"}">${float(p["unrealized_pl"]):.2f}</td></tr>' for p in positions])}
                 </table>
             </div>
             ''' if positions else ''}
             
             <div class="card">
                 <h3>ℹ️ Info</h3>
+                <div>Broker: OANDA</div>
                 <div>Mode: {TRADING_MODE.upper()}</div>
                 <div>Last Reset: {state.get('last_reset_date', 'Never')}</div>
                 <div>Disabled Strategies: {', '.join(state.get('disabled_strategies', [])) or 'None'}</div>
@@ -923,7 +920,7 @@ def dashboard(session: str = Cookie(default="")):
                                 html += '<tr><td>' + date + '</td><td style=\"color: ' + pnlColor + ';\">' + pnlSign + '$' + stats.pnl.toFixed(2) + '</td><td>' + stats.trades + '</td><td>' + stats.win_rate + '%</td></tr>';
                             }}
                             if (Object.keys(data).length === 0) {{
-                                html = '<tr><td colspan=\"4\">No trades this week</td></tr>';
+                                html = '<tr><td colspan="4">No trades this week</td></tr>';
                             }}
                             tbody.innerHTML = html;
                         }}
