@@ -1,4 +1,4 @@
-# app.py - COMPLETE FINAL VERSION WITH ALL FEATURES
+# app.py - COMPLETE FINAL VERSION WITH ALL FEATURES (FIXED)
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -886,7 +886,7 @@ def dashboard(session: str = Cookie(default="")):
                     .then(data => {{
                         const container = document.getElementById('notifications');
                         if (container && data.notifications) {{
-                            container.innerHTML = data.notifications.map(n => `<div class="notification notification-${{n.priority}}">${{n.message}}</div>`).join('');
+                            container.innerHTML = data.notifications.map(n => '<div class=\"notification notification-' + n.priority + '\">' + n.message + '</div>').join('');
                         }}
                     }})
                     .catch(err => console.log('Notification error:', err));
@@ -896,15 +896,16 @@ def dashboard(session: str = Cookie(default="")):
                 fetch('/api/profit-metrics')
                     .then(r => r.json())
                     .then(data => {{
-                        document.getElementById('weeklyPnlDisplay').innerHTML = `$${data.weekly_pnl}`;
+                        document.getElementById('weeklyPnlDisplay').innerHTML = '$' + data.weekly_pnl;
                         document.getElementById('weeklyPnlDisplay').style.color = data.weekly_pnl >= 0 ? '#00c853' : '#d32f2f';
-                        document.getElementById('dailyPercentDisplay').innerHTML = `${data.daily_percent >= 0 ? '+' : ''}${data.daily_percent}% today`;
+                        var percentSign = data.daily_percent >= 0 ? '+' : '';
+                        document.getElementById('dailyPercentDisplay').innerHTML = percentSign + data.daily_percent + '% today';
                         document.getElementById('usdtBalance').innerHTML = data.usdt_balance;
-                        document.getElementById('bestTrade').innerHTML = `<span style="color:#00c853;">+$${data.best_trade}</span> on ${data.best_trade_symbol || 'N/A'}`;
+                        document.getElementById('bestTrade').innerHTML = '<span style=\"color:#00c853;\">+$' + data.best_trade + '</span> on ' + (data.best_trade_symbol || 'N/A');
                         
                         const pnlElement = document.getElementById('dailyPnl');
                         if (pnlElement) {{
-                            pnlElement.textContent = `$${data.daily_pnl}`;
+                            pnlElement.textContent = '$' + data.daily_pnl;
                             pnlElement.style.color = data.daily_pnl >= 0 ? '#00c853' : '#d32f2f';
                         }}
                     }})
@@ -915,13 +916,16 @@ def dashboard(session: str = Cookie(default="")):
                     .then(data => {{
                         const tbody = document.getElementById('weeklyTableBody');
                         if (tbody) {{
-                            tbody.innerHTML = Object.entries(data).map(([date, stats]) => {{
+                            let html = '';
+                            for (const [date, stats] of Object.entries(data)) {{
                                 const pnlColor = stats.pnl >= 0 ? '#00c853' : '#d32f2f';
-                                return `<tr><td>{date}</td><td style="color: ${pnlColor};">${stats.pnl >= 0 ? '+' : ''}$${stats.pnl.toFixed(2)}</td><td>{stats.trades}</td><td>{stats.win_rate}%</td></tr>`;
-                            }}).join('');
-                            if (Object.keys(data).length === 0) {{
-                                tbody.innerHTML = '<tr><td colspan="4">No trades this week</td></tr>';
+                                const pnlSign = stats.pnl >= 0 ? '+' : '';
+                                html += '<tr><td>' + date + '</td><td style=\"color: ' + pnlColor + ';\">' + pnlSign + '$' + stats.pnl.toFixed(2) + '</td><td>' + stats.trades + '</td><td>' + stats.win_rate + '%</td></tr>';
                             }}
+                            if (Object.keys(data).length === 0) {{
+                                html = '<tr><td colspan=\"4\">No trades this week</td></tr>';
+                            }}
+                            tbody.innerHTML = html;
                         }}
                     }})
                     .catch(err => console.log('Weekly breakdown error:', err));
