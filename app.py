@@ -1,4 +1,4 @@
-# app.py - COMPLETE WORKING VERSION (Just Copy Everything!)
+# app.py - COMPLETE WORKING VERSION (No Syntax Errors)
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -276,7 +276,6 @@ def get_notifications(session: str = Cookie(default="")):
     if STRATEGY_ENABLED:
         notifications.append({"type": "strategy", "message": f"🤖 Auto Strategy: {STRATEGY_TYPE} (every {STRATEGY_TIMEFRAME} min)", "priority": "low"})
     
-    # Add a few recent trades
     trades = get_trades_from_db(3)
     for trade in trades:
         action_icon = "🟢" if trade.get("action") == "buy" else "🔴"
@@ -444,7 +443,13 @@ def toggle_symbol(session: str = Cookie(default=""), symbol: str = ""):
     return RedirectResponse("/dashboard", 303)
 
 @app.post("/update-risk-settings")
-def update_risk_settings(session: str = Cookie(default=""), max_units_per_trade: int = Form(None), max_trades_per_day: int = Form(None), stop_loss_pips: int = Form(None), take_profit_pips: int = Form(None)):
+def update_risk_settings(
+    session: str = Cookie(default=""),
+    max_units_per_trade: int = Form(None),
+    max_trades_per_day: int = Form(None),
+    stop_loss_pips: int = Form(None),
+    take_profit_pips: int = Form(None)
+):
     if not is_logged_in(session):
         raise HTTPException(401, "Not logged in")
     state = load_state()
@@ -552,6 +557,7 @@ def dashboard(session: str = Cookie(default="")):
     mode_text = mode_display.get(asset_mode, "💱 Forex")
     
     allowed_symbols = state.get("allowed_symbols", ["EUR_USD", "GBP_USD", "USD_JPY"])
+    force_forex_override = state.get("force_forex_trading", False)
 
     return f"""
     <!DOCTYPE html>
@@ -687,7 +693,7 @@ def dashboard(session: str = Cookie(default="")):
             <div class="grid">
                 <div class="card">
                     <h3>📊 Trading Status</h3>
-                    <div class="metric">${daily_pnl:.2f}</div>
+                    <div class="metric" id="dailyPnl">${daily_pnl:.2f}</div>
                     <div class="metric-label">Daily P/L</div>
                     <hr>
                     <div>
@@ -723,6 +729,31 @@ def dashboard(session: str = Cookie(default="")):
                 </div>
             </div>
             
+            <!-- Forex Market Override Toggle -->
+            <div class="card">
+                <h3>🔧 Forex Market Override</h3>
+                <div class="flex" style="align-items: center; justify-content: space-between; flex-wrap: wrap;">
+                    <div>
+                        <div>
+                            <span id="forexOverrideStatus" class="status-badge {'status-warning' if force_forex_override else 'status-enabled'}">
+                                {'⚠️ OVERRIDE ACTIVE' if force_forex_override else '✅ Normal Hours Only'}
+                            </span>
+                        </div>
+                        <div class="metric-label" style="margin-top: 8px;">
+                            Current Market: <span id="marketStatusDisplay">{'OPEN' if market_open else 'CLOSED'}</span>
+                        </div>
+                        <div style="font-size: 0.7rem; opacity: 0.6; margin-top: 8px;">
+                            ⚠️ WARNING: Trading outside normal hours (Sun 5pm - Fri 5pm ET) may have wider spreads
+                        </div>
+                    </div>
+                    <form method="post" action="/toggle-forex-override">
+                        <button type="submit" id="forexOverrideBtn" class="warning">
+                            {'🔒 Disable Override' if force_forex_override else '🔓 Force Enable 24/7'}
+                        </button>
+                    </form>
+                </div>
+            </div>
+            
             <div class="card">
                 <h3>🎮 Controls</h3>
                 <div class="flex">
@@ -739,11 +770,11 @@ def dashboard(session: str = Cookie(default="")):
             <div class="card">
                 <h3>🔍 Symbol Filter</h3>
                 <form method="post" action="/update-allowed-symbols" class="flex">
-                    <input type="text" name="add_symbol" placeholder="Add symbol (e.g., EUR_USD)" style="flex:1; padding:10px; border-radius:8px; background:rgba(255,255,255,0.2); color:white; border:none;">
+                    <input type="text" name="add_symbol" placeholder="Add symbol (e.g., EUR_USD, GBP_USD)" style="flex:1; padding:10px; border-radius:8px; background:rgba(255,255,255,0.2); color:white; border:none;">
                     <button type="submit">➕ Add</button>
                 </form>
-                <div class="section-title">💱 Trading Symbols:</div>
-                <div class="flex">
+                <div class="section-title">💱 Forex Pairs:</div>
+                <div class="flex" id="symbolsList">
                     {''.join([f'<div class="symbol-tag">{s}<form method="post" action="/toggle-symbol/{s}" style="display:inline;"><button type="submit">✕</button></form></div>' for s in allowed_symbols])}
                 </div>
             </div>
@@ -762,72 +793,158 @@ def dashboard(session: str = Cookie(default="")):
             </div>
             
             <div class="card">
+                <h3>📅 Weekly Breakdown</h3>
+                <table id="weeklyTable">
+                    <thead><tr><th>Date</th><th>P&L</th><th>Trades</th><th>Win Rate</th></tr></thead>
+                    <tbody id="weeklyTableBody"><tr><td colspan="4">Loading...</td></tr></tbody>
+                </table>
+            </div>
+            
+            <div class="card">
                 <h3>ℹ️ Info</h3>
                 <div>Broker: OANDA</div>
                 <div>Mode: {TRADING_MODE.upper()}</div>
                 <div>Strategy: {'AUTONOMOUS ON' if STRATEGY_ENABLED else 'AUTONOMOUS OFF'}</div>
                 <div>Last Reset: {state.get('last_reset_date', 'Never')}</div>
+                <div>Forex Override: {'ACTIVE (24/7 Mode)' if force_forex_override else 'OFF (Normal Hours)'}</div>
             </div>
         </div>
         
         <script>
-            function refreshNotifications() {
-                fetch('/api/notifications', {
+            function refreshNotifications() {{
+                fetch('/api/notifications', {{
                     credentials: 'include'
-                })
-                .then(response => response.json())
-                .then(data => {
-                    const container = document.getElementById('notifications');
-                    if (container && data.notifications) {
-                        if (data.notifications.length === 0) {
+                }})
+                .then(function(response) {{ return response.json(); }})
+                .then(function(data) {{
+                    var container = document.getElementById('notifications');
+                    if (container && data.notifications) {{
+                        if (data.notifications.length === 0) {{
                             container.innerHTML = '<div class="notification notification-low">No new notifications</div>';
-                        } else {
-                            container.innerHTML = data.notifications.map(n => 
-                                '<div class="notification notification-' + (n.priority || 'low') + '">' + n.message + '</div>'
-                            ).join('');
-                        }
-                    }
-                })
-                .catch(err => {
+                        }} else {{
+                            var html = '';
+                            for (var i = 0; i < data.notifications.length; i++) {{
+                                var n = data.notifications[i];
+                                html += '<div class="notification notification-' + (n.priority || 'low') + '">' + n.message + '</div>';
+                            }}
+                            container.innerHTML = html;
+                        }}
+                    }}
+                }})
+                .catch(function(err) {{
                     console.log('Notification error:', err);
-                    const container = document.getElementById('notifications');
-                    if (container) {
+                    var container = document.getElementById('notifications');
+                    if (container) {{
                         container.innerHTML = '<div class="notification notification-low">🔄 Loading...</div>';
-                    }
-                });
-            }
+                    }}
+                }});
+            }}
             
-            function refreshProfitMetrics() {
-                fetch('/api/profit-metrics', {credentials: 'include'})
-                    .then(r => r.json())
-                    .then(data => {
-                        const weeklyElement = document.getElementById('weeklyPnlDisplay');
-                        if (weeklyElement) {
+            function refreshProfitMetrics() {{
+                fetch('/api/profit-metrics', {{credentials: 'include'}})
+                    .then(function(response) {{ return response.json(); }})
+                    .then(function(data) {{
+                        var weeklyElement = document.getElementById('weeklyPnlDisplay');
+                        if (weeklyElement) {{
                             weeklyElement.innerHTML = '$' + data.weekly_pnl;
                             weeklyElement.style.color = data.weekly_pnl >= 0 ? '#00c853' : '#d32f2f';
-                        }
-                        const percentElement = document.getElementById('dailyPercentDisplay');
-                        if (percentElement) {
+                        }}
+                        var percentElement = document.getElementById('dailyPercentDisplay');
+                        if (percentElement) {{
                             var sign = data.daily_percent >= 0 ? '+' : '';
                             percentElement.innerHTML = sign + data.daily_percent + '% today';
-                        }
-                        const balanceElement = document.getElementById('usdtBalance');
-                        if (balanceElement) {
+                        }}
+                        var balanceElement = document.getElementById('usdtBalance');
+                        if (balanceElement) {{
                             balanceElement.innerHTML = data.usdt_balance;
-                        }
-                        const bestElement = document.getElementById('bestTrade');
-                        if (bestElement) {
+                        }}
+                        var bestElement = document.getElementById('bestTrade');
+                        if (bestElement) {{
                             bestElement.innerHTML = '<span style="color:#00c853;">+$' + data.best_trade + '</span> on ' + (data.best_trade_symbol || 'N/A');
-                        }
-                    })
-                    .catch(err => console.log('Profit metrics error:', err));
-            }
+                        }}
+                        var pnlElement = document.getElementById('dailyPnl');
+                        if (pnlElement) {{
+                            pnlElement.textContent = '$' + data.daily_pnl;
+                            pnlElement.style.color = data.daily_pnl >= 0 ? '#00c853' : '#d32f2f';
+                        }}
+                    }})
+                    .catch(function(err) {{ console.log('Profit metrics error:', err); }});
+                
+                fetch('/api/weekly-breakdown', {{credentials: 'include'}})
+                    .then(function(response) {{ return response.json(); }})
+                    .then(function(data) {{
+                        var tbody = document.getElementById('weeklyTableBody');
+                        if (tbody) {{
+                            var html = '';
+                            for (var date in data) {{
+                                if (data.hasOwnProperty(date)) {{
+                                    var stats = data[date];
+                                    var pnlColor = stats.pnl >= 0 ? '#00c853' : '#d32f2f';
+                                    var pnlSign = stats.pnl >= 0 ? '+' : '';
+                                    html += '<tr><td>' + date + '</td><td style="color: ' + pnlColor + ';">' + pnlSign + '$' + stats.pnl.toFixed(2) + '</td><td>' + stats.trades + '</td><td>' + stats.win_rate + '%</td></tr>';
+                                }}
+                            }}
+                            if (html === '') {{
+                                html = '<tr><td colspan="4">No trades this week</td></tr>';
+                            }}
+                            tbody.innerHTML = html;
+                        }}
+                    }})
+                    .catch(function(err) {{ console.log('Weekly breakdown error:', err); }});
+            }}
+            
+            function refreshForexOverride() {{
+                fetch('/api/forex-override', {{credentials: 'include'}})
+                    .then(function(response) {{ return response.json(); }})
+                    .then(function(data) {{
+                        var statusSpan = document.getElementById('forexOverrideStatus');
+                        var btn = document.getElementById('forexOverrideBtn');
+                        if (statusSpan) {{
+                            if (data.force_forex_trading) {{
+                                statusSpan.innerHTML = '⚠️ OVERRIDE ACTIVE (24/7 Mode)';
+                                statusSpan.className = 'status-badge status-warning';
+                            }} else {{
+                                statusSpan.innerHTML = '✅ Normal Hours Only';
+                                statusSpan.className = 'status-badge status-enabled';
+                            }}
+                        }}
+                        if (btn) {{
+                            if (data.force_forex_trading) {{
+                                btn.innerHTML = '🔒 Disable Override';
+                            }} else {{
+                                btn.innerHTML = '🔓 Force Enable 24/7';
+                            }}
+                        }}
+                    }})
+                    .catch(function(err) {{ console.log('Forex override refresh error:', err); }});
+            }}
+            
+            function refreshMarketStatus() {{
+                fetch('/api/notifications', {{credentials: 'include'}})
+                    .then(function(response) {{ return response.json(); }})
+                    .then(function(data) {{
+                        var marketSpan = document.getElementById('marketStatusDisplay');
+                        if (marketSpan && data.notifications) {{
+                            for (var i = 0; i < data.notifications.length; i++) {{
+                                if (data.notifications[i].type === 'market') {{
+                                    marketSpan.innerHTML = data.notifications[i].message;
+                                    break;
+                                }}
+                            }}
+                        }}
+                    }})
+                    .catch(function(err) {{ console.log('Market status refresh error:', err); }});
+            }}
             
             // Refresh every 10 seconds
             refreshNotifications();
             refreshProfitMetrics();
+            refreshForexOverride();
+            refreshMarketStatus();
             setInterval(refreshNotifications, 10000);
             setInterval(refreshProfitMetrics, 10000);
+            setInterval(refreshForexOverride, 10000);
+            setInterval(refreshMarketStatus, 10000);
         </script>
     </body>
     </html>
