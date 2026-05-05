@@ -239,7 +239,15 @@ def build_oanda_order(symbol, units, action, price, state, strategy="unknown"):
             tp_price = calculate_take_profit_price("sell", price, take_profit_pips)
     
     result = client.place_market_order(symbol, oanda_units, sl_price, tp_price)
-    order_id = result.get("id", "unknown")
+
+    # Stop here if OANDA rejected the order.
+    if result.get("error"):
+        raise ValueError(f"OANDA order rejected: {result.get('error')}")
+
+    order_id = result.get("id")
+    if not order_id or order_id == "unknown":
+        raise ValueError(f"OANDA order did not return a valid id: {result}")
+
     return {"id": order_id, "result": result}
 
 
@@ -405,7 +413,8 @@ def check_heartbeat_warning():
     if last_webhook:
         try:
             last_time = datetime.fromisoformat(last_webhook)
-            if datetime.now() - last_time > timedelta(minutes=30):
+            now = datetime.now(last_time.tzinfo) if last_time.tzinfo else datetime.now()
+            if now - last_time > timedelta(minutes=30):
                 if not state.get("heartbeat_warning_sent"):
                     send_telegram_message("⚠️ Warning: No heartbeat webhook received in 30 minutes")
                     state["heartbeat_warning_sent"] = True
@@ -459,7 +468,8 @@ def get_heartbeat_status():
         return "No heartbeat received", "warning"
     try:
         last_time = datetime.fromisoformat(last_webhook)
-        minutes_ago = (datetime.now() - last_time).total_seconds() / 60
+        now = datetime.now(last_time.tzinfo) if last_time.tzinfo else datetime.now()
+        minutes_ago = (now - last_time).total_seconds() / 60
         if minutes_ago < 5:
             return f"Healthy ({minutes_ago:.0f} min ago)", "ok"
         elif minutes_ago < 30:
@@ -511,4 +521,3 @@ def auto_disable_bad_strategies():
         save_state(state)
     except Exception as e:
         write_log(f"Auto-disable strategies error: {e}")
-        
