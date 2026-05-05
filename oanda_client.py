@@ -1,37 +1,46 @@
-#!/bin/bash
-set -e
+services:
+  - type: web
+    name: trading-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT --workers 1 --log-level info
+    envVars:
+      # Paper/demo safety defaults.
+      - key: TRADING_MODE
+        value: paper
+      - key: OANDA_TRADING_MODE
+        value: demo
 
-PROJECT_DIR="$HOME/tv_bot"
-SERVICE_FILE="/etc/systemd/system/tvbot.service"
+      # Add these secrets manually in Render.
+      - key: OANDA_API_KEY
+        sync: false
+      - key: OANDA_ACCOUNT_ID
+        sync: false
+      - key: DASHBOARD_PASSWORD
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
 
-if [ ! -d "$PROJECT_DIR" ]; then
-  echo "Expected project at $PROJECT_DIR"
-  echo "Move this folder to ~/tv_bot first."
-  exit 1
-fi
+      # Optional Telegram commands.
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
 
-cd "$PROJECT_DIR"
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-sudo tee "$SERVICE_FILE" > /dev/null <<SERVICE
-[Unit]
-Description=TradingView Alpaca Bot
-After=network.target
-
-[Service]
-User=$USER
-WorkingDirectory=$PROJECT_DIR
-ExecStart=$PROJECT_DIR/.venv/bin/python -m uvicorn app:app --host 0.0.0.0 --port 8000
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
-
-sudo systemctl daemon-reload
-sudo systemctl enable tvbot.service
-sudo systemctl restart tvbot.service
-sudo systemctl status tvbot.service
+      # Autonomous strategy.
+      - key: STRATEGY_ENABLED
+        value: "true"
+      - key: STRATEGY_TYPE
+        value: "ema_crossover"
+      - key: STRATEGY_TIMEFRAME
+        value: "5"
+      - key: FAST_EMA_PERIOD
+        value: "9"
+      - key: SLOW_EMA_PERIOD
+        value: "21"
+      - key: RSI_PERIOD
+        value: "14"
+      - key: RSI_OVERSOLD
+        value: "30"
+      - key: RSI_OVERBOUGHT
+        value: "70"
