@@ -180,4 +180,5 @@ def execute_autonomous_trade():
             write_log(f"Error checking {symbol}: {e}")
             continue
 
+    
     write_log("DEBUG: No trading signals this cycle")
