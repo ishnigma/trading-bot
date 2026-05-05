@@ -1,4 +1,5 @@
-# telegram_bot.py - Telegram command polling for /on, /off, /state, and /help
+# telegram_bot.py
+# Telegram command polling for /on, /off, /state, and /help.
 
 import requests
 
