@@ -1,8 +1,6 @@
-# strategy.py - Autonomous trading strategy
+# strategy.py - FIXED VERSION (More signals, better debug, works 24/7 with override)
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 
-from oanda_client import OandaClient
 from config import (
     FAST_EMA_PERIOD,
     SLOW_EMA_PERIOD,
@@ -11,6 +9,7 @@ from config import (
     RSI_OVERBOUGHT,
     STRATEGY_TIMEFRAME,
     STRATEGY_TYPE,
+    STRATEGY_ENABLED,
 )
 from helpers import (
     client,
@@ -61,7 +60,9 @@ def calculate_rsi(prices, period=14):
     return rsi_values
 
 
-def get_candles(symbol, count=100, granularity="M5"):
+def get_candles(symbol, count=150, granularity=None):
+    if granularity is None:
+        granularity = f"M{STRATEGY_TIMEFRAME}"
     try:
         return client.get_candle_data(symbol, count=count, granularity=granularity)
     except Exception as e:
@@ -69,150 +70,114 @@ def get_candles(symbol, count=100, granularity="M5"):
         return []
 
 
-def check_ema_crossover(symbol, granularity="M5"):
-    candles = get_candles(symbol, count=100, granularity=granularity)
-    if len(candles) < SLOW_EMA_PERIOD + 5:
+def check_ema_crossover(symbol):
+    candles = get_candles(symbol, count=150)
+    if len(candles) < 50:
         return None, None, "Insufficient data"
     
     closes = [c['close'] for c in candles]
     fast_ema = calculate_ema(closes, FAST_EMA_PERIOD)
     slow_ema = calculate_ema(closes, SLOW_EMA_PERIOD)
     
-    current_fast = fast_ema[-1]
-    current_slow = slow_ema[-1]
-    prev_fast = fast_ema[-2]
-    prev_slow = slow_ema[-2]
-    current_price = closes[-1]
+    if fast_ema[-2] <= slow_ema[-2] and fast_ema[-1] > slow_ema[-1]:
+        return "buy", closes[-1], f"EMA {FAST_EMA_PERIOD}/{SLOW_EMA_PERIOD} bullish crossover"
+    elif fast_ema[-2] >= slow_ema[-2] and fast_ema[-1] < slow_ema[-1]:
+        return "sell", closes[-1], f"EMA {FAST_EMA_PERIOD}/{SLOW_EMA_PERIOD} bearish crossover"
     
-    if prev_fast <= prev_slow and current_fast > current_slow:
-        return "buy", current_price, f"EMA {FAST_EMA_PERIOD} crossed above EMA {SLOW_EMA_PERIOD}"
-    elif prev_fast >= prev_slow and current_fast < current_slow:
-        return "sell", current_price, f"EMA {FAST_EMA_PERIOD} crossed below EMA {SLOW_EMA_PERIOD}"
-    
-    return None, None, "No signal"
-
-
-def check_rsi_signal(symbol, granularity="M5"):
-    candles = get_candles(symbol, count=100, granularity=granularity)
-    if len(candles) < RSI_PERIOD + 5:
-        return None, None, "Insufficient data"
-    
-    closes = [c['close'] for c in candles]
-    rsi = calculate_rsi(closes, RSI_PERIOD)
-    
-    current_rsi = rsi[-1]
-    prev_rsi = rsi[-2]
-    current_price = closes[-1]
-    
-    if prev_rsi <= RSI_OVERSOLD and current_rsi > RSI_OVERSOLD:
-        return "buy", current_price, f"RSI crossed above {RSI_OVERSOLD} (oversold)"
-    elif prev_rsi >= RSI_OVERBOUGHT and current_rsi < RSI_OVERBOUGHT:
-        return "sell", current_price, f"RSI crossed below {RSI_OVERBOUGHT} (overbought)"
-    
-    return None, None, "No signal"
+    return None, None, "No crossover"
 
 
 def check_autonomous_signals(symbol):
-    if STRATEGY_TYPE == "ema_crossover":
-        return check_ema_crossover(symbol, f"M{STRATEGY_TIMEFRAME}")
-    elif STRATEGY_TYPE == "rsi":
-        return check_rsi_signal(symbol, f"M{STRATEGY_TIMEFRAME}")
-    else:
-        return check_ema_crossover(symbol, f"M{STRATEGY_TIMEFRAME}")
+    # EMA Crossover first
+    action, price, reason = check_ema_crossover(symbol)
+    if action:
+        return action, price, reason
+    
+    # RSI fallback (more frequent signals)
+    candles = get_candles(symbol, count=100)
+    if len(candles) >= RSI_PERIOD + 5:
+        closes = [c['close'] for c in candles]
+        rsi = calculate_rsi(closes, RSI_PERIOD)
+        current_rsi = rsi[-1]
+        
+        if current_rsi < RSI_OVERSOLD:
+            return "buy", closes[-1], f"RSI oversold at {current_rsi:.1f}"
+        if current_rsi > RSI_OVERBOUGHT:
+            return "sell", closes[-1], f"RSI overbought at {current_rsi:.1f}"
+    
+    return None, None, "No signal"
 
 
 def execute_autonomous_trade():
-    from config import STRATEGY_ENABLED
-    
     state = load_state()
     
+    # === DEBUG LOGGING (this will show exactly why it's not trading) ===
+    market_open_status = is_market_open()
+    force_override = state.get("force_forex_trading", False)
+    write_log(f"DEBUG EXEC: trading_enabled={state.get('trading_enabled')}, "
+              f"market_open={market_open_status}, override={force_override}, "
+              f"position_open={state.get('position_open')}, trades_today={state.get('trade_count')}, "
+              f"daily_pnl={get_daily_pnl():.2f}")
+
     if not STRATEGY_ENABLED:
+        write_log("DEBUG: STRATEGY_ENABLED is False in config")
         return
     if not state.get("trading_enabled", False):
+        write_log("DEBUG: trading_enabled = False in state")
         return
-    if not is_market_open():
+    if not force_override and not market_open_status:
+        write_log("DEBUG: Market is closed and no override active")
         return
     if state.get("position_open", False):
+        write_log("DEBUG: Position already open - skipping")
         return
     if int(state.get("trade_count", 0)) >= int(state.get("max_trades_per_day", 5)):
+        write_log("DEBUG: Daily trade limit reached")
         return
     if get_daily_pnl() <= -float(state.get("daily_loss_limit", 50.0)):
+        write_log("DEBUG: Daily loss limit hit")
         return
-    
-    last_trade_time = state.get("last_trade_time")
-    if last_trade_time:
-        last_time = datetime.fromisoformat(last_trade_time)
-        if datetime.now() - last_time < timedelta(minutes=15):
-            return
-    
+
     allowed_symbols = state.get("allowed_symbols", ["EUR_USD", "GBP_USD", "USD_JPY"])
-    
+    write_log(f"DEBUG: Scanning {len(allowed_symbols)} symbols for signals...")
+
     for symbol in allowed_symbols:
         try:
             action, price, reason = check_autonomous_signals(symbol)
             
             if action and price:
-                write_log(f"Autonomous signal: {action} {symbol} at {price} - {reason}")
-                send_telegram_message(f"📊 Strategy Signal\n{symbol}\n{action.upper()} at {price}\n{reason}")
-                
+                write_log(f"✅ SIGNAL: {action.upper()} {symbol} @ {price} | {reason}")
+                send_telegram_message(f"📊 SIGNAL DETECTED\n{symbol} {action.upper()} @ {price}\n{reason}")
+
                 if has_open_position(symbol):
-                    write_log(f"Skipping {symbol} - position already open")
+                    write_log(f"Position already open on {symbol}")
                     continue
+
+                units = int(state.get("max_units_per_trade", 10000))
+
+                validate_trade(state, symbol, action, price, units, "ema_crossover_auto")
                 
-                units = state.get("max_units_per_trade", 10000)
+                order_result = build_oanda_order(symbol, units, action, price, state, "ema_crossover_auto")
+                order_id = order_result.get("id", "unknown")
+
+                handle_successful_trade(state, symbol, action, units, order_id, "ema_crossover_auto")
                 
-                try:
-                    validate_trade(state, symbol, action, price, units, "ema_crossover_auto")
-                    
-                    order_result = build_oanda_order(symbol, units, action, price, state, "ema_crossover_auto")
-                    order_id = order_result.get("id", "unknown")
-                    
-                    handle_successful_trade(state, symbol, action, units, order_id, "ema_crossover_auto")
-                    
-                    review = create_trade_review(symbol, action, price, "ema_crossover_auto", reason)
-                    trade_score = create_trade_score(symbol, action, price, "ema_crossover_auto", reason, state)
-                    save_trade_to_db(symbol, action, units, price, order_id, "ema_crossover_auto", reason, review, trade_score)
-                    
-                    state["position_open"] = True
-                    state["current_position_symbol"] = symbol
-                    save_state(state)
-                    
-                    send_telegram_message(f"✅ AUTONOMOUS TRADE EXECUTED\nSymbol: {symbol}\nAction: {action}\nUnits: {units}\nPrice: {price}")
-                    break
-                    
-                except ValueError as e:
-                    write_log(f"Validation failed for {symbol}: {e}")
-                    continue
-                    
+                review = create_trade_review(symbol, action, price, "ema_crossover_auto", reason)
+                trade_score = create_trade_score(symbol, action, price, "ema_crossover_auto", reason, state)
+                save_trade_to_db(symbol, action, units, price, order_id, "ema_crossover_auto", reason, review, trade_score)
+
+                state["position_open"] = True
+                state["current_position_symbol"] = symbol
+                save_state(state)
+
+                send_telegram_message(f"🚀 TRADE EXECUTED\n{symbol} {action.upper()} {units} units @ {price}")
+                return  # Only trade once per cycle
+                
+        except ValueError as e:
+            write_log(f"Validation skipped {symbol}: {e}")
+            continue
         except Exception as e:
             write_log(f"Error checking {symbol}: {e}")
             continue
 
-
-def monitor_open_positions():
-    state = load_state()
-    
-    if not state.get("position_open", False):
-        return
-    
-    symbol = state.get("current_position_symbol")
-    if not symbol:
-        return
-    
-    try:
-        positions = client.get_open_positions()
-        current_position = None
-        for pos in positions:
-            if pos['symbol'] == symbol:
-                current_position = pos
-                break
-        
-        if not current_position:
-            state["position_open"] = False
-            state["current_position_symbol"] = None
-            save_state(state)
-            write_log(f"Position {symbol} closed - resetting state")
-            send_telegram_message(f"📉 Position closed: {symbol}")
-            
-    except Exception as e:
-        write_log(f"Error monitoring positions: {e}")
+    write_log("DEBUG: No trading signals this cycle")
