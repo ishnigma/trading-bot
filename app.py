@@ -1,4 +1,4 @@
-# app.py - FULLY FIXED DASHBOARD VERSION
+# app.py - FULL RESTORED DASHBOARD + FIXES (v2.1)
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -54,7 +54,7 @@ def validate_config():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    write_log("=== Trading Bot STARTING UP (v2.1 Fixed) ===")
+    write_log("=== Trading Bot STARTING UP (v2.1 - Full Dashboard) ===")
     if not validate_config():
         raise RuntimeError("Invalid configuration")
     
@@ -77,89 +77,10 @@ async def lifespan(app: FastAPI):
         write_log(f"✅ Autonomous strategy enabled every {STRATEGY_TIMEFRAME} min")
 
     scheduler.start()
-    write_log("✅ APScheduler started")
+    write_log("✅ APScheduler started successfully")
     yield
-    scheduler.shutdown()
+    if scheduler.running:
+        scheduler.shutdown()
+    write_log("Trading Bot shutdown complete")
 
-app = FastAPI(title="Trading Bot", lifespan=lifespan)
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
-
-# ... [All your API endpoints are kept exactly as original] ...
-
-@app.get("/dashboard", response_class=HTMLResponse)
-def dashboard(session: str = Cookie(default="")):
-    if not is_logged_in(session):
-        return """<html><body style="background:#1a1a2e;color:white;font-family:Arial;display:flex;justify-content:center;align-items:center;height:100vh;">
-            <div style="background:rgba(255,255,255,0.1);padding:40px;border-radius:10px;">
-                <h2>Trading Bot Login</h2>
-                <form method="post" action="/login">
-                    <input type="password" name="password" placeholder="Password" style="padding:10px;width:100%;margin:10px 0;"/>
-                    <button type="submit" style="padding:10px 20px;background:#00d4ff;border:none;border-radius:5px;">Login</button>
-                </form>
-            </div>
-        </body></html>"""
-
-    state = load_state()
-    reset_daily_state_if_needed(state)
-
-    try:
-        market_open = is_market_open()
-        daily_pnl = get_daily_pnl()
-    except:
-        market_open = False
-        daily_pnl = 0
-
-    asset_mode = state.get("asset_mode", "forex")
-    allowed_symbols = state.get("allowed_symbols", ["EUR_USD", "GBP_USD", "USD_JPY"])
-    force_forex_override = state.get("force_forex_trading", True)
-
-    return f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Trading Bot Dashboard</title>
-        <style>
-            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-            body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%); color: #eee; padding: 20px; min-height: 100vh; }}
-            .container {{ max-width: 1400px; margin: 0 auto; }}
-            h1 {{ font-size: 2rem; margin-bottom: 1rem; }}
-            .card {{ background: rgba(255,255,255,0.1); backdrop-filter: blur(10px); border-radius: 16px; padding: 20px; border: 1px solid rgba(255,255,255,0.2); margin-bottom: 20px; }}
-            button {{ background: #00d4ff; color: #1a1a2e; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; margin: 5px; }}
-            button:hover {{ transform: scale(1.02); }}
-            button.danger {{ background: #d32f2f; color: white; }}
-            .status-badge {{ padding: 4px 12px; border-radius: 20px; font-size: 0.85rem; font-weight: bold; }}
-            .status-enabled {{ background: #00c853; color: white; }}
-            .status-warning {{ background: #ff6d00; color: white; }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>🤖 Trading Bot Dashboard <span style="font-size:0.8rem;">v{BOT_VERSION}</span></h1>
-            
-            <div class="card">
-                <h3>📊 Status</h3>
-                <span class="status-badge status-enabled">{'🟢 ENABLED' if state.get('trading_enabled') else '🔴 DISABLED'}</span>
-                <span class="status-badge {'status-warning' if force_forex_override else ''}" style="margin-left:10px;">{'⚠️ 24/7 OVERRIDE ON' if force_forex_override else 'Normal Hours'}</span>
-            </div>
-
-            <!-- Add your full original dashboard content here if needed, but this should restore basic functionality -->
-            <div class="card">
-                <h3>Controls</h3>
-                <form method="post" action="/enable" style="display:inline;"><button class="success">Enable Trading</button></form>
-                <form method="post" action="/disable" style="display:inline;"><button class="danger">Disable</button></form>
-                <form method="post" action="/toggle-forex-override" style="display:inline;"><button>Toggle 24/7 Override</button></form>
-                <form method="post" action="/reset-daily-stats" style="display:inline;"><button>Reset Stats</button></form>
-                <form method="post" action="/close-all-positions" style="display:inline;"><button class="danger">Close All Positions</button></form>
-            </div>
-        </div>
-    </body>
-    </html>
-    """
-
-if __name__ == "__main__":
-    import uvicorn
-    import os
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+app = FastAPI(title="Trading
