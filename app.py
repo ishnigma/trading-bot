@@ -1,966 +1,781 @@
-# app.py - COMPLETE WORKING VERSION (No Syntax Errors)
+# app.py
+# Full copy/paste version for Render + OANDA forex-only bot
+
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+import os
 import secrets
+import requests
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import Cookie, FastAPI, Form, HTTPException, Request, Response
+from fastapi import Cookie, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
-from config import DASHBOARD_PASSWORD, TRADING_MODE, WEBHOOK_SECRET, BOT_VERSION
-from config import STRATEGY_ENABLED, STRATEGY_TIMEFRAME, STRATEGY_TYPE
+from config import (
+    DASHBOARD_PASSWORD,
+    WEBHOOK_SECRET,
+    TRADING_MODE,
+    BOT_VERSION,
+    STRATEGY_ENABLED,
+    STRATEGY_TIMEFRAME,
+    STRATEGY_TYPE,
+    PUBLIC_BASE_URL,
+)
+
 from helpers import (
-    build_oanda_order,
-    calculate_units_from_price,
+    init_database,
+    load_state,
+    save_state,
+    write_log,
+    reset_daily_state_if_needed,
+    get_daily_pnl,
+    get_open_positions,
+    close_all_positions,
+    get_trades_from_db,
+    is_market_open,
+    sync_recent_orders,
     check_heartbeat_warning,
     check_market_status_alert,
+    send_scheduled_daily_report,
+    make_daily_backup,
     clean_old_backups,
-    client,
-    close_all_positions,
-    create_trade_review,
-    create_trade_score,
     disable_trading_end_of_day,
     enable_trading_morning,
-    get_daily_pnl,
     get_heartbeat_status,
-    get_open_positions,
-    get_trades_from_db,
-    handle_successful_trade,
-    init_database,
-    is_market_open,
-    load_state,
-    make_daily_backup,
-    record_error,
-    reset_daily_state_if_needed,
-    save_state,
-    save_trade_to_db,
-    send_scheduled_daily_report,
-    sync_recent_orders,
-    validate_trade,
-    write_log,
-    auto_disable_bad_strategies,
-    send_telegram_message,
 )
-from telegram_bot import check_telegram_commands
+
 from strategy import execute_autonomous_trade, monitor_open_positions
+
+try:
+    from telegram_bot import check_telegram_commands
+except Exception:
+    def check_telegram_commands():
+        # Telegram is optional. This keeps the app alive if telegram_bot.py is missing.
+        return
+
 
 scheduler = BackgroundScheduler()
 market_timezone = ZoneInfo("America/New_York")
-
-# Session management with expiry
 active_sessions = {}
 
+
 def create_session():
+    # Create simple dashboard login session
     token = secrets.token_urlsafe(32)
     active_sessions[token] = datetime.now()
     return token
 
+
 def is_logged_in(session: str = ""):
+    # Check dashboard login session
     if session not in active_sessions:
         return False
+
     if datetime.now() - active_sessions[session] > timedelta(hours=8):
         del active_sessions[session]
         return False
+
     return True
 
+
+def keep_alive_self():
+    # Keeps Render warm when PUBLIC_BASE_URL is set
+    if not PUBLIC_BASE_URL:
+        return
+
+    try:
+        requests.get(f"{PUBLIC_BASE_URL}/keep-alive", timeout=20)
+        write_log("Keep-alive ping sent")
+    except Exception as error:
+        write_log(f"Keep-alive ping failed: {error}")
+
+
 def validate_config():
-    required_vars = {
-        "DASHBOARD_PASSWORD": DASHBOARD_PASSWORD,
-        "WEBHOOK_SECRET": WEBHOOK_SECRET
-    }
-    missing = [v for v, val in required_vars.items() if not val]
+    # Basic safety check
+    missing = []
+
+    if not DASHBOARD_PASSWORD:
+        missing.append("DASHBOARD_PASSWORD")
+
+    if not WEBHOOK_SECRET:
+        missing.append("WEBHOOK_SECRET")
+
     if missing:
-        write_log(f"CRITICAL: Missing config vars: {missing}")
+        write_log(f"Missing required config values: {missing}")
         return False
-    write_log("✅ Configuration validation passed")
+
     return True
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    write_log("=== Trading Bot STARTING UP on Render ===")
-    
+    # Runs when Render starts the bot
+    write_log("Trading bot starting")
+
     if not validate_config():
-        write_log("FATAL: Invalid configuration")
         raise RuntimeError("Invalid configuration")
-    
+
     init_database()
 
-    scheduler.add_job(check_telegram_commands, "interval", seconds=5)
+    scheduler.add_job(check_telegram_commands, "interval", seconds=10)
     scheduler.add_job(sync_recent_orders, "interval", minutes=2)
     scheduler.add_job(check_heartbeat_warning, "interval", minutes=5)
     scheduler.add_job(check_market_status_alert, "interval", minutes=5)
+    scheduler.add_job(keep_alive_self, "interval", minutes=10)
+
     scheduler.add_job(send_scheduled_daily_report, "cron", hour=16, minute=10, timezone=market_timezone)
     scheduler.add_job(make_daily_backup, "cron", hour=16, minute=20, timezone=market_timezone)
     scheduler.add_job(clean_old_backups, "cron", hour=16, minute=30, timezone=market_timezone)
+
     scheduler.add_job(disable_trading_end_of_day, "cron", hour=15, minute=45, timezone=market_timezone)
     scheduler.add_job(enable_trading_morning, "cron", hour=9, minute=35, timezone=market_timezone)
-    
+
     if STRATEGY_ENABLED:
-        interval_minutes = int(STRATEGY_TIMEFRAME)
-        scheduler.add_job(execute_autonomous_trade, "interval", minutes=interval_minutes)
+        scheduler.add_job(execute_autonomous_trade, "interval", minutes=int(STRATEGY_TIMEFRAME))
         scheduler.add_job(monitor_open_positions, "interval", minutes=1)
-        write_log(f"✅ Autonomous strategy enabled - checking every {interval_minutes} minutes")
+        write_log(f"Autonomous strategy enabled every {STRATEGY_TIMEFRAME} minutes")
 
     scheduler.start()
-    write_log("✅ APScheduler started successfully")
+    write_log("Scheduler started")
+
     yield
+
     if scheduler.running:
         scheduler.shutdown()
-    write_log("Trading Bot shutdown complete")
 
-app = FastAPI(title="Trading Bot", lifespan=lifespan)
+    write_log("Trading bot stopped")
 
+
+app = FastAPI(title="OANDA Forex Trading Bot", lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
 
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request, exc):
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "detail": exc.detail,
-            "timestamp": datetime.now().isoformat(),
-            "path": request.url.path
-        }
-    )
-
-def check_dashboard_password(password):
-    return password == DASHBOARD_PASSWORD
-
-
-# ========== API ENDPOINTS ==========
 
 @app.get("/")
 def home():
-    return {"message": "Trading bot is running", "status": "healthy", "dashboard": "/dashboard"}
+    return RedirectResponse("/dashboard")
+
 
 @app.get("/health")
 def health_check():
+    # Render health check
     try:
         state = load_state()
         return {
             "status": "healthy",
+            "bot_version": BOT_VERSION,
             "trading_enabled": state.get("trading_enabled", False),
+            "forex_enabled": state.get("forex_trading_enabled", True),
             "strategy_enabled": STRATEGY_ENABLED,
+            "scheduler_running": scheduler.running,
             "timestamp": datetime.now().isoformat(),
-            "scheduler_running": scheduler.running
         }
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"status": "unhealthy", "error": str(e)})
+    except Exception as error:
+        return JSONResponse(status_code=500, content={"status": "unhealthy", "error": str(error)})
+
+
+@app.get("/keep-alive")
+def keep_alive():
+    # Used by Render keep-alive ping
+    return {
+        "status": "alive",
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page():
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Trading Bot Login</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                background: #f4f6f8;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                min-height: 100vh;
+            }
+            .box {
+                background: white;
+                padding: 30px;
+                border-radius: 12px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+                width: 340px;
+            }
+            input, button {
+                width: 100%;
+                padding: 12px;
+                margin-top: 12px;
+                border-radius: 8px;
+                border: 1px solid #ccc;
+                font-size: 16px;
+            }
+            button {
+                background: #0d6efd;
+                color: white;
+                border: none;
+                cursor: pointer;
+            }
+        </style>
+    </head>
+    <body>
+        <form class="box" method="post" action="/login">
+            <h2>Trading Bot Login</h2>
+            <input type="password" name="password" placeholder="Dashboard Password" required>
+            <button type="submit">Login</button>
+        </form>
+    </body>
+    </html>
+    """
+
+
+@app.post("/login")
+def login(password: str = Form(...)):
+    if password != DASHBOARD_PASSWORD:
+        return HTMLResponse("Wrong password. Go back and try again.", status_code=401)
+
+    session = create_session()
+    response = RedirectResponse("/dashboard", status_code=302)
+    response.set_cookie("session", session, httponly=True, max_age=28800)
+    return response
+
+
+@app.get("/logout")
+def logout(session: str = Cookie(default="")):
+    if session in active_sessions:
+        del active_sessions[session]
+
+    response = RedirectResponse("/login", status_code=302)
+    response.delete_cookie("session")
+    return response
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard(session: str = Cookie(default="")):
+    if not is_logged_in(session):
+        return RedirectResponse("/login", status_code=302)
+
+    state = load_state()
+    reset_daily_state_if_needed(state)
+
+    # OANDA is forex only
+    state["asset_mode"] = "forex"
+
+    if "forex_trading_enabled" not in state:
+        state["forex_trading_enabled"] = True
+
+    save_state(state)
+
+    trading_enabled = state.get("trading_enabled", False)
+    forex_enabled = state.get("forex_trading_enabled", True)
+    market_open = is_market_open()
+    daily_pnl = get_daily_pnl()
+    positions = get_open_positions()
+    trades = get_trades_from_db(20)
+    heartbeat = get_heartbeat_status()
+
+    trading_status = "ON" if trading_enabled else "OFF"
+    forex_status = "Enabled" if forex_enabled else "Disabled"
+    market_status = "Open" if market_open else "Closed"
+    keep_alive_status = "ON" if PUBLIC_BASE_URL else "OFF"
+
+    checked_enable = "checked" if forex_enabled else ""
+    checked_disable = "" if forex_enabled else "checked"
+
+    position_rows = ""
+    for position in positions:
+        position_rows += f"""
+        <tr>
+            <td>{position.get('symbol', '')}</td>
+            <td>{position.get('side', '')}</td>
+            <td>{position.get('qty', '')}</td>
+            <td>{position.get('avg_entry_price', '')}</td>
+            <td>{position.get('unrealized_pl', '')}</td>
+        </tr>
+        """
+
+    if not position_rows:
+        position_rows = "<tr><td colspan='5'>No open positions</td></tr>"
+
+    trade_rows = ""
+    for trade in trades:
+        trade_rows += f"""
+        <tr>
+            <td>{trade.get('time', '')}</td>
+            <td>{trade.get('symbol', '')}</td>
+            <td>{trade.get('action', '')}</td>
+            <td>{trade.get('units', '')}</td>
+            <td>{trade.get('price', '')}</td>
+            <td>{trade.get('strategy', '')}</td>
+        </tr>
+        """
+
+    if not trade_rows:
+        trade_rows = "<tr><td colspan='6'>No trades yet</td></tr>"
+
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>OANDA Forex Trading Bot</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background: #f4f6f8;
+                margin: 0;
+                padding: 20px;
+                color: #222;
+            }}
+            .top {{
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 20px;
+            }}
+            .grid {{
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+                gap: 16px;
+            }}
+            .card {{
+                background: white;
+                padding: 18px;
+                border-radius: 12px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            }}
+            .big {{
+                font-size: 30px;
+                font-weight: bold;
+            }}
+            .green {{
+                color: #0a8f3c;
+            }}
+            .red {{
+                color: #c62828;
+            }}
+            .yellow {{
+                color: #a66b00;
+            }}
+            button {{
+                padding: 10px 14px;
+                border: none;
+                border-radius: 8px;
+                cursor: pointer;
+                font-size: 15px;
+                margin: 4px 0;
+            }}
+            .btn-green {{
+                background: #0a8f3c;
+                color: white;
+            }}
+            .btn-red {{
+                background: #c62828;
+                color: white;
+            }}
+            .btn-blue {{
+                background: #0d6efd;
+                color: white;
+            }}
+            .btn-gray {{
+                background: #555;
+                color: white;
+            }}
+            input {{
+                padding: 10px;
+                border-radius: 8px;
+                border: 1px solid #ccc;
+                width: 100%;
+                box-sizing: border-box;
+                margin-bottom: 8px;
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                background: white;
+            }}
+            th, td {{
+                border-bottom: 1px solid #ddd;
+                padding: 8px;
+                text-align: left;
+                font-size: 14px;
+            }}
+            .radio-box {{
+                display: flex;
+                gap: 20px;
+                margin: 12px 0;
+            }}
+            .radio-box label {{
+                background: #f0f2f5;
+                padding: 12px;
+                border-radius: 8px;
+                flex: 1;
+                cursor: pointer;
+            }}
+            .small {{
+                color: #666;
+                font-size: 13px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="top">
+            <h1>OANDA Forex Trading Bot</h1>
+            <a href="/logout">Logout</a>
+        </div>
+
+        <div class="grid">
+            <div class="card">
+                <h3>Trading Status</h3>
+                <div class="big {'green' if trading_enabled else 'red'}">{trading_status}</div>
+                <p>Forex market setting: <strong>{forex_status}</strong></p>
+                <p>Market: <strong>{market_status}</strong></p>
+                <form method="post" action="/enable-trading">
+                    <button class="btn-green" type="submit">Enable Trading</button>
+                </form>
+                <form method="post" action="/disable-trading">
+                    <button class="btn-red" type="submit">Disable Trading</button>
+                </form>
+            </div>
+
+            <div class="card">
+                <h3>Market Settings</h3>
+                <p>OANDA is forex only, so stock market options were removed.</p>
+                <form method="post" action="/update-market-settings">
+                    <div class="radio-box">
+                        <label>
+                            <input type="radio" name="forex_trading_enabled" value="true" {checked_enable}>
+                            Enable Forex
+                        </label>
+                        <label>
+                            <input type="radio" name="forex_trading_enabled" value="false" {checked_disable}>
+                            Disable Forex
+                        </label>
+                    </div>
+                    <button class="btn-blue" type="submit">Save Market Settings</button>
+                </form>
+            </div>
+
+            <div class="card">
+                <h3>Profit / Loss</h3>
+                <div class="big {'green' if daily_pnl >= 0 else 'red'}">${daily_pnl:.2f}</div>
+                <p>Daily P&L</p>
+            </div>
+
+            <div class="card">
+                <h3>Keep Alive</h3>
+                <div class="big {'green' if PUBLIC_BASE_URL else 'yellow'}">{keep_alive_status}</div>
+                <p class="small">Set PUBLIC_BASE_URL in Render to your app URL so it can ping itself.</p>
+                <p class="small">Example: https://your-app-name.onrender.com</p>
+            </div>
+
+            <div class="card">
+                <h3>Strategy</h3>
+                <p>Strategy Enabled: <strong>{STRATEGY_ENABLED}</strong></p>
+                <p>Strategy Type: <strong>{STRATEGY_TYPE}</strong></p>
+                <p>Timeframe: <strong>{STRATEGY_TIMEFRAME} min</strong></p>
+            </div>
+
+            <div class="card">
+                <h3>Heartbeat</h3>
+                <p>{heartbeat}</p>
+            </div>
+        </div>
+
+        <div class="card" style="margin-top: 16px;">
+            <h3>Risk Settings</h3>
+            <form method="post" action="/update-risk-settings">
+                <div class="grid">
+                    <div>
+                        <label>Max Units Per Trade</label>
+                        <input type="number" name="max_units_per_trade" value="{state.get('max_units_per_trade', 10000)}">
+                    </div>
+                    <div>
+                        <label>Max Trades Per Day</label>
+                        <input type="number" name="max_trades_per_day" value="{state.get('max_trades_per_day', 5)}">
+                    </div>
+                    <div>
+                        <label>Stop Loss Pips</label>
+                        <input type="number" name="stop_loss_pips" value="{state.get('stop_loss_pips', 50)}">
+                    </div>
+                    <div>
+                        <label>Take Profit Pips</label>
+                        <input type="number" name="take_profit_pips" value="{state.get('take_profit_pips', 50)}">
+                    </div>
+                    <div>
+                        <label>Daily Loss Limit</label>
+                        <input type="number" name="daily_loss_limit" value="{state.get('daily_loss_limit', 50)}">
+                    </div>
+                </div>
+                <button class="btn-blue" type="submit">Save Risk Settings</button>
+            </form>
+        </div>
+
+        <div class="card" style="margin-top: 16px;">
+            <h3>Positions</h3>
+            <form method="post" action="/close-all-positions">
+                <button class="btn-red" type="submit">Close All Positions</button>
+            </form>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Side</th>
+                        <th>Units</th>
+                        <th>Entry</th>
+                        <th>P&L</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {position_rows}
+                </tbody>
+            </table>
+        </div>
+
+        <div class="card" style="margin-top: 16px;">
+            <h3>Recent Trades</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Symbol</th>
+                        <th>Action</th>
+                        <th>Units</th>
+                        <th>Price</th>
+                        <th>Strategy</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {trade_rows}
+                </tbody>
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.post("/enable-trading")
+def enable_trading(session: str = Cookie(default="")):
+    if not is_logged_in(session):
+        return RedirectResponse("/login", status_code=302)
+
+    state = load_state()
+    state["trading_enabled"] = True
+    state["asset_mode"] = "forex"
+    save_state(state)
+    write_log("Trading enabled from dashboard")
+    return RedirectResponse("/dashboard", status_code=302)
+
+
+@app.post("/disable-trading")
+def disable_trading(session: str = Cookie(default="")):
+    if not is_logged_in(session):
+        return RedirectResponse("/login", status_code=302)
+
+    state = load_state()
+    state["trading_enabled"] = False
+    save_state(state)
+    write_log("Trading disabled from dashboard")
+    return RedirectResponse("/dashboard", status_code=302)
+
+
+@app.post("/update-market-settings")
+def update_market_settings(
+    forex_trading_enabled: str = Form(...),
+    session: str = Cookie(default=""),
+):
+    if not is_logged_in(session):
+        return RedirectResponse("/login", status_code=302)
+
+    state = load_state()
+
+    # OANDA is forex only
+    state["asset_mode"] = "forex"
+    state["forex_trading_enabled"] = forex_trading_enabled.lower() == "true"
+
+    save_state(state)
+    write_log(f"Forex trading setting changed to {state['forex_trading_enabled']}")
+    return RedirectResponse("/dashboard", status_code=302)
+
+
+@app.post("/update-risk-settings")
+def update_risk_settings(
+    max_units_per_trade: int = Form(...),
+    max_trades_per_day: int = Form(...),
+    stop_loss_pips: int = Form(...),
+    take_profit_pips: int = Form(...),
+    daily_loss_limit: float = Form(...),
+    session: str = Cookie(default=""),
+):
+    if not is_logged_in(session):
+        return RedirectResponse("/login", status_code=302)
+
+    state = load_state()
+    state["max_units_per_trade"] = max_units_per_trade
+    state["max_trades_per_day"] = max_trades_per_day
+    state["stop_loss_pips"] = stop_loss_pips
+    state["take_profit_pips"] = take_profit_pips
+    state["daily_loss_limit"] = daily_loss_limit
+
+    save_state(state)
+    write_log("Risk settings updated from dashboard")
+    return RedirectResponse("/dashboard", status_code=302)
+
+
+@app.post("/close-all-positions")
+def close_positions(session: str = Cookie(default="")):
+    if not is_logged_in(session):
+        return RedirectResponse("/login", status_code=302)
+
+    close_all_positions()
+
+    state = load_state()
+    state["position_open"] = False
+    state["current_position_symbol"] = None
+    save_state(state)
+
+    write_log("Close all positions requested from dashboard")
+    return RedirectResponse("/dashboard", status_code=302)
+
+
+@app.get("/api/notifications")
+def get_notifications(session: str = Cookie(default="")):
+    if not is_logged_in(session):
+        raise HTTPException(401, "Not logged in")
+
+    state = load_state()
+    notifications = []
+
+    if state.get("trading_enabled", False):
+        notifications.append({
+            "type": "trading",
+            "message": "Trading is enabled",
+            "priority": "low",
+        })
+    else:
+        notifications.append({
+            "type": "trading",
+            "message": "Trading is disabled",
+            "priority": "high",
+        })
+
+    if state.get("forex_trading_enabled", True):
+        notifications.append({
+            "type": "market",
+            "message": "Forex trading is enabled",
+            "priority": "low",
+        })
+    else:
+        notifications.append({
+            "type": "market",
+            "message": "Forex trading is disabled",
+            "priority": "high",
+        })
+
+    notifications.append({
+        "type": "strategy",
+        "message": f"Auto Strategy: {STRATEGY_TYPE} every {STRATEGY_TIMEFRAME} minutes",
+        "priority": "low",
+    })
+
+    if not PUBLIC_BASE_URL:
+        notifications.append({
+            "type": "keep_alive",
+            "message": "PUBLIC_BASE_URL is not set in Render. Keep-alive is off.",
+            "priority": "medium",
+        })
+
+    return {"notifications": notifications}
 
 
 @app.get("/api/profit-metrics")
 def get_profit_metrics(session: str = Cookie(default="")):
     if not is_logged_in(session):
         raise HTTPException(401, "Not logged in")
-    
-    trades = get_trades_from_db(500)
+
     daily_pnl = get_daily_pnl()
-    
-    try:
-        account_summary = client.get_account_summary()
-        current_equity = float(account_summary.get('account', {}).get('balance', 10000))
-        buying_power = float(account_summary.get('account', {}).get('nav', 10000))
-    except:
-        current_equity = 10000
-        buying_power = 10000
-    
-    previous_equity = current_equity - daily_pnl
-    daily_percent = (daily_pnl / previous_equity * 100) if previous_equity > 0 else 0
-    
-    today = datetime.now().date()
-    weekly_pnl = 0
-    weekly_trades = 0
-    weekly_wins = 0
-    best_trade = 0
-    worst_trade = 0
-    best_trade_symbol = ""
-    worst_trade_symbol = ""
-    
-    for trade in trades:
-        if trade.get('action') == 'sell':
-            try:
-                trade_date = datetime.fromisoformat(trade.get('time', '')).date()
-                pnl = float(trade.get('units', 0)) * float(trade.get('price', 0))
-                
-                if (today - trade_date).days <= 7:
-                    weekly_pnl += pnl
-                    weekly_trades += 1
-                    if pnl > 0:
-                        weekly_wins += 1
-                
-                if pnl > best_trade:
-                    best_trade = pnl
-                    best_trade_symbol = trade.get('symbol', '')
-                if pnl < worst_trade:
-                    worst_trade = pnl
-                    worst_trade_symbol = trade.get('symbol', '')
-            except:
-                pass
-    
-    weekly_win_rate = (weekly_wins / weekly_trades * 100) if weekly_trades > 0 else 0
-    
+    trades = get_trades_from_db(500)
+
     return {
         "daily_pnl": round(daily_pnl, 2),
-        "daily_percent": round(daily_percent, 2),
-        "weekly_pnl": round(weekly_pnl, 2),
-        "weekly_trades": weekly_trades,
-        "weekly_win_rate": round(weekly_win_rate, 1),
-        "current_equity": round(current_equity, 2),
-        "buying_power": round(buying_power, 2),
-        "usdt_balance": round(buying_power, 2),
-        "best_trade": round(best_trade, 2),
-        "best_trade_symbol": best_trade_symbol,
-        "worst_trade": round(worst_trade, 2),
-        "worst_trade_symbol": worst_trade_symbol,
+        "trade_count": len(trades),
+        "timestamp": datetime.now().isoformat(),
     }
+
 
 @app.get("/api/weekly-breakdown")
 def get_weekly_breakdown(session: str = Cookie(default="")):
     if not is_logged_in(session):
         raise HTTPException(401, "Not logged in")
-    
+
     trades = get_trades_from_db(500)
-    daily_breakdown = {}
     today = datetime.now().date()
-    
+    breakdown = {}
+
     for i in range(7):
         date = today - timedelta(days=i)
-        daily_breakdown[date.isoformat()] = {"pnl": 0, "trades": 0, "wins": 0}
-    
+        breakdown[date.isoformat()] = {
+            "pnl": 0,
+            "trades": 0,
+            "wins": 0,
+            "win_rate": 0,
+        }
+
     for trade in trades:
-        if trade.get('action') == 'sell':
-            try:
-                trade_date = datetime.fromisoformat(trade.get('time', '')).date()
-                if trade_date >= today - timedelta(days=7):
-                    pnl = float(trade.get('units', 0)) * float(trade.get('price', 0))
-                    date_str = trade_date.isoformat()
-                    if date_str in daily_breakdown:
-                        daily_breakdown[date_str]["pnl"] += pnl
-                        daily_breakdown[date_str]["trades"] += 1
-                        if pnl > 0:
-                            daily_breakdown[date_str]["wins"] += 1
-            except:
-                pass
-    
-    for date in daily_breakdown:
-        trades_count = daily_breakdown[date]["trades"]
-        daily_breakdown[date]["win_rate"] = round((daily_breakdown[date]["wins"] / trades_count * 100), 1) if trades_count > 0 else 0
-    
-    return dict(sorted(daily_breakdown.items(), reverse=True))
+        try:
+            trade_time = trade.get("time")
+            if not trade_time:
+                continue
 
-@app.get("/api/notifications")
-def get_notifications(session: str = Cookie(default="")):
-    if not is_logged_in(session):
-        return {"notifications": [{"message": "Please login first", "priority": "high"}]}
-    
-    state = load_state()
-    notifications = []
-    
-    status = "🟢" if state.get("trading_enabled") else "🔴"
-    status_text = "TRADING ACTIVE" if state.get("trading_enabled") else "TRADING PAUSED"
-    notifications.append({"type": "status", "message": f"{status} {status_text}", "priority": "high"})
-    
-    try:
-        market_open = is_market_open()
-        market_icon = "🟢" if market_open else "🔴"
-        market_text = "MARKET OPEN" if market_open else "MARKET CLOSED"
-        notifications.append({"type": "market", "message": f"{market_icon} {market_text}", "priority": "high"})
-    except:
-        pass
-    
-    asset_mode = state.get("asset_mode", "forex")
-    mode_icons = {"forex": "💱", "stocks": "📈", "crypto": "🪙", "both": "🌐"}
-    notifications.append({"type": "mode", "message": f"{mode_icons.get(asset_mode, '💱')} Trading: {asset_mode.upper()}", "priority": "low"})
-    
-    if STRATEGY_ENABLED:
-        # Safe notification message for strategy status
-        strategy_type = globals().get("STRATEGY_TYPE", "ema_crossover")
-        strategy_timeframe = globals().get("STRATEGY_TIMEFRAME", "5")
-        notifications.append({
-            "type": "strategy",
-            "message": f"🤖 Auto Strategy: {strategy_type} (every {strategy_timeframe} min)",
-            "priority": "low"
-        })
-    
-    trades = get_trades_from_db(3)
-    for trade in trades:
-        action_icon = "🟢" if trade.get("action") == "buy" else "🔴"
-        notifications.append({"type": "trade", "message": f"{action_icon} {trade.get('symbol')} {trade.get('action', '').upper()}", "priority": "medium"})
-    
-    return {"notifications": notifications}
+            trade_date = datetime.fromisoformat(trade_time).date()
+            date_key = trade_date.isoformat()
 
-@app.get("/api/symbols")
-def get_api_symbols(session: str = Cookie(default="")):
-    if not is_logged_in(session):
-        raise HTTPException(401, "Not logged in")
-    state = load_state()
-    return {"symbols": state.get("allowed_symbols", [])}
+            if date_key not in breakdown:
+                continue
 
+            breakdown[date_key]["trades"] += 1
 
-# ========== FOREX OVERRIDE ENDPOINTS ==========
+        except Exception:
+            continue
 
-@app.post("/toggle-forex-override")
-def toggle_forex_override(session: str = Cookie(default="")):
-    if not is_logged_in(session):
-        raise HTTPException(401, "Not logged in")
-    
-    state = load_state()
-    current = state.get("force_forex_trading", False)
-    state["force_forex_trading"] = not current
-    save_state(state)
-    
-    status = "ENABLED" if state["force_forex_trading"] else "DISABLED"
-    write_log(f"Forex market override {status}")
-    
-    try:
-        send_telegram_message(f"🔧 Forex market override {status}")
-    except:
-        pass
-    
-    return RedirectResponse(url="/dashboard", status_code=303)
+    return breakdown
 
 
 @app.get("/api/forex-override")
 def get_forex_override(session: str = Cookie(default="")):
     if not is_logged_in(session):
-        return {"force_forex_trading": False}
-    state = load_state()
-    return {"force_forex_trading": state.get("force_forex_trading", False)}
-
-
-# ========== DASHBOARD CONTROLS ==========
-
-@app.post("/login")
-def login(response: Response, password: str = Form("")):
-    if not check_dashboard_password(password):
-        raise HTTPException(status_code=401, detail="Wrong password")
-    
-    session_token = create_session()
-    response = RedirectResponse(url="/dashboard", status_code=303)
-    response.set_cookie(key="session", value=session_token, httponly=True, secure=True, samesite="lax", max_age=28800)
-    return response
-
-@app.post("/logout")
-def logout():
-    response = RedirectResponse(url="/dashboard", status_code=303)
-    response.delete_cookie(key="session")
-    return response
-
-@app.post("/enable")
-def enable_trading(session: str = Cookie(default="")):
-    if not is_logged_in(session): 
         raise HTTPException(401, "Not logged in")
+
     state = load_state()
-    state["trading_enabled"] = True
-    save_state(state)
-    return RedirectResponse("/dashboard", 303)
 
-@app.post("/disable")
-def disable_trading(session: str = Cookie(default="")):
-    if not is_logged_in(session): 
-        raise HTTPException(401, "Not logged in")
-    state = load_state()
-    state["trading_enabled"] = False
-    save_state(state)
-    return RedirectResponse("/dashboard", 303)
+    return {
+        "force_forex_trading": state.get("force_forex_trading", False),
+        "forex_trading_enabled": state.get("forex_trading_enabled", True),
+    }
 
-@app.post("/backup-now")
-def backup_now(session: str = Cookie(default="")):
-    if not is_logged_in(session): 
-        raise HTTPException(401, "Not logged in")
-    make_daily_backup()
-    return RedirectResponse("/dashboard", 303)
 
-@app.post("/toggle-asset-mode")
-def toggle_asset_mode(session: str = Cookie(default="")):
+@app.post("/toggle-forex-override")
+def toggle_forex_override(session: str = Cookie(default="")):
     if not is_logged_in(session):
-        raise HTTPException(401, "Not logged in")
+        return RedirectResponse("/login", status_code=302)
+
     state = load_state()
-    modes = ["forex", "stocks", "crypto", "both"]
-    current = state.get("asset_mode", "forex")
-    current_idx = modes.index(current) if current in modes else 0
-    next_mode = modes[(current_idx + 1) % len(modes)]
-    state["asset_mode"] = next_mode
-    save_state(state)
-    return RedirectResponse("/dashboard", 303)
-
-@app.post("/reset-daily-stats")
-def reset_daily_stats(session: str = Cookie(default="")):
-    if not is_logged_in(session):
-        raise HTTPException(401, "Not logged in")
-    state = load_state()
-    state["trade_count"] = 0
-    state["strategy_trade_counts"] = {}
-    save_state(state)
-    return RedirectResponse("/dashboard", 303)
-
-@app.post("/clear-errors")
-def clear_errors(session: str = Cookie(default="")):
-    if not is_logged_in(session):
-        raise HTTPException(401, "Not logged in")
-    state = load_state()
-    state["error_count"] = 0
-    state["last_error_message"] = None
-    save_state(state)
-    return RedirectResponse("/dashboard", 303)
-
-@app.post("/close-all-positions")
-def close_all_positions_endpoint(session: str = Cookie(default="")):
-    if not is_logged_in(session):
-        raise HTTPException(401, "Not logged in")
-    close_all_positions()
-    return RedirectResponse("/dashboard", 303)
-
-@app.post("/update-allowed-symbols")
-def update_allowed_symbols(session: str = Cookie(default=""), add_symbol: str = Form(None)):
-    if not is_logged_in(session):
-        raise HTTPException(401, "Not logged in")
-    state = load_state()
-    current_symbols = state.get("allowed_symbols", ["EUR_USD", "GBP_USD", "USD_JPY"])
-    
-    if add_symbol and add_symbol.strip():
-        new_symbol = add_symbol.strip().upper()
-        if "_" not in new_symbol and len(new_symbol) == 6:
-            new_symbol = f"{new_symbol[:3]}_{new_symbol[3:]}"
-        if new_symbol not in current_symbols:
-            current_symbols.append(new_symbol)
-    
-    state["allowed_symbols"] = current_symbols
-    save_state(state)
-    return RedirectResponse("/dashboard", 303)
-
-@app.post("/toggle-symbol/{symbol}")
-def toggle_symbol(session: str = Cookie(default=""), symbol: str = ""):
-    if not is_logged_in(session):
-        raise HTTPException(401, "Not logged in")
-    state = load_state()
-    current = state.get("allowed_symbols", ["EUR_USD", "GBP_USD", "USD_JPY"])
-    symbol = symbol.upper()
-    if "_" not in symbol and len(symbol) == 6:
-        symbol = f"{symbol[:3]}_{symbol[3:]}"
-    
-    if symbol in current:
-        current.remove(symbol)
-    else:
-        current.append(symbol)
-    
-    state["allowed_symbols"] = current
-    save_state(state)
-    return RedirectResponse("/dashboard", 303)
-
-@app.post("/update-risk-settings")
-def update_risk_settings(
-    session: str = Cookie(default=""),
-    max_units_per_trade: int = Form(None),
-    max_trades_per_day: int = Form(None),
-    stop_loss_pips: int = Form(None),
-    take_profit_pips: int = Form(None)
-):
-    if not is_logged_in(session):
-        raise HTTPException(401, "Not logged in")
-    state = load_state()
-    
-    if max_units_per_trade is not None:
-        state["max_units_per_trade"] = max_units_per_trade
-    if max_trades_per_day is not None:
-        state["max_trades_per_day"] = max_trades_per_day
-    if stop_loss_pips is not None:
-        state["stop_loss_pips"] = stop_loss_pips
-    if take_profit_pips is not None:
-        state["take_profit_pips"] = take_profit_pips
-    
-    save_state(state)
-    return RedirectResponse("/dashboard", 303)
-
-
-# ========== WEBHOOK ==========
-
-@app.post("/webhook")
-async def webhook(request: Request):
-    state = load_state()
-    reset_daily_state_if_needed(state)
-    data = await request.json()
-
-    if data.get("secret") != WEBHOOK_SECRET:
-        record_error(state, "Wrong webhook secret")
-        raise HTTPException(status_code=401, detail="Wrong secret")
-
-    symbol = str(data.get("symbol", "")).upper()
-    action = str(data.get("action", "")).lower()
-    strategy = str(data.get("strategy", "unknown"))
-    reason = str(data.get("reason", "no reason provided"))
-    price = float(data.get("price", 0))
-
-    state["last_webhook_time"] = datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
-    state["last_webhook_symbol"] = symbol
-    state["last_webhook_action"] = action
-    state["heartbeat_warning_sent"] = False
+    state["force_forex_trading"] = not state.get("force_forex_trading", False)
     save_state(state)
 
-    if action == "heartbeat":
-        return {"ok": True}
-
-    if "_" not in symbol and len(symbol) == 6:
-        symbol = f"{symbol[:3]}_{symbol[3:]}"
-
-    units = float(data.get("units") or calculate_units_from_price(price, state, strategy))
-
-    try:
-        review = create_trade_review(symbol, action, price, strategy, reason)
-        trade_score = create_trade_score(symbol, action, price, strategy, reason, state)
-
-        if trade_score < int(state.get("minimum_trade_score", 70)):
-            raise ValueError(f"Trade score too low: {trade_score}")
-
-        auto_disable_bad_strategies()
-        state = load_state()
-        validate_trade(state, symbol, action, price, units, strategy)
-
-        order_result = build_oanda_order(symbol, units, action, price, state, strategy)
-        order_id = order_result.get('id', 'unknown')
-
-        handle_successful_trade(state, symbol, action, units, order_id, strategy)
-        save_trade_to_db(symbol, action, units, price, order_id, strategy, reason, review, trade_score)
-
-        return {"ok": True, "symbol": symbol, "action": action, "units": units}
-    except ValueError as e:
-        record_error(state, str(e))
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        record_error(state, f"Broker error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ========== DASHBOARD HTML ==========
-
-@app.get("/dashboard", response_class=HTMLResponse)
-def dashboard(session: str = Cookie(default="")):
-    if not is_logged_in(session):
-        return """
-        <html><body style="background:#1a1a2e; color:white; font-family:Arial; display:flex; justify-content:center; align-items:center; height:100vh;">
-            <div style="background:rgba(255,255,255,0.1); padding:40px; border-radius:10px;">
-                <h2>Trading Bot Login</h2>
-                <form method="post" action="/login">
-                    <input type="password" name="password" placeholder="Password" style="padding:10px; width:100%; margin:10px 0;" />
-                    <button type="submit" style="padding:10px 20px; background:#00d4ff; border:none; border-radius:5px;">Login</button>
-                </form>
-            </div>
-        </body></html>
-        """
-
-    state = load_state()
-    reset_daily_state_if_needed(state)
-
-    try:
-        market_open = is_market_open()
-        daily_pnl = get_daily_pnl()
-    except Exception as e:
-        market_open = False
-        daily_pnl = 0
-
-    asset_mode = state.get("asset_mode", "forex")
-    mode_display = {"forex": "💱 Forex", "stocks": "📈 Stocks", "crypto": "🪙 Crypto", "both": "🌐 Both"}
-    mode_text = mode_display.get(asset_mode, "💱 Forex")
-    
-    allowed_symbols = state.get("allowed_symbols", ["EUR_USD", "GBP_USD", "USD_JPY"])
-    force_forex_override = state.get("force_forex_trading", False)
-
-    return f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Trading Bot Dashboard</title>
-        <style>
-            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-            body {{
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
-                color: #eee;
-                padding: 20px;
-                min-height: 100vh;
-            }}
-            .container {{ max-width: 1400px; margin: 0 auto; }}
-            h1 {{ font-size: 2rem; margin-bottom: 1rem; display: flex; align-items: center; gap: 10px; }}
-            
-            .notification-bar {{
-                background: rgba(0,0,0,0.8);
-                border-radius: 12px;
-                padding: 12px 20px;
-                margin-bottom: 20px;
-                display: flex;
-                flex-wrap: wrap;
-                gap: 15px;
-                align-items: center;
-                backdrop-filter: blur(10px);
-                border: 1px solid rgba(0,212,255,0.3);
-            }}
-            .notification {{
-                display: inline-flex;
-                align-items: center;
-                gap: 8px;
-                padding: 6px 14px;
-                border-radius: 20px;
-                font-size: 0.85rem;
-            }}
-            .notification-high {{ background: rgba(255,109,0,0.3); border-left: 3px solid #ff6d00; }}
-            .notification-medium {{ background: rgba(0,212,255,0.2); border-left: 3px solid #00d4ff; }}
-            .notification-low {{ background: rgba(255,255,255,0.1); }}
-            
-            .grid {{
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
-                gap: 20px;
-                margin-bottom: 20px;
-            }}
-            .card {{
-                background: rgba(255,255,255,0.1);
-                backdrop-filter: blur(10px);
-                border-radius: 16px;
-                padding: 20px;
-                border: 1px solid rgba(255,255,255,0.2);
-            }}
-            .card h3 {{ margin-bottom: 15px; color: #00d4ff; font-size: 1.2rem; }}
-            
-            .status-badge {{
-                display: inline-block;
-                padding: 4px 12px;
-                border-radius: 20px;
-                font-size: 0.85rem;
-                font-weight: bold;
-            }}
-            .status-enabled {{ background: #00c853; color: white; }}
-            .status-disabled {{ background: #d32f2f; color: white; }}
-            .status-open {{ background: #00c853; color: white; }}
-            .status-closed {{ background: #ff6d00; color: white; }}
-            .status-warning {{
-                background: #ff6d00;
-                color: white;
-                padding: 4px 12px;
-                border-radius: 20px;
-                display: inline-block;
-                animation: pulse 1s infinite;
-            }}
-            .mode-forex {{ background: #2196f3; }}
-            
-            @keyframes pulse {{
-                0% {{ opacity: 1; }}
-                50% {{ opacity: 0.7; }}
-                100% {{ opacity: 1; }}
-            }}
-            
-            button {{
-                background: #00d4ff;
-                color: #1a1a2e;
-                border: none;
-                padding: 10px 20px;
-                border-radius: 8px;
-                cursor: pointer;
-                font-weight: bold;
-                margin: 5px;
-            }}
-            button:hover {{ transform: scale(1.02); }}
-            button.danger {{ background: #d32f2f; color: white; }}
-            button.warning {{ background: #ff6d00; color: white; }}
-            button.success {{ background: #00c853; color: white; }}
-            
-            .metric {{ font-size: 2rem; font-weight: bold; margin: 10px 0; }}
-            .metric-label {{ font-size: 0.85rem; opacity: 0.8; }}
-            
-            table {{ width: 100%; border-collapse: collapse; }}
-            th, td {{ padding: 8px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.1); }}
-            
-            .flex {{ display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }}
-            .symbol-tag {{
-                display: inline-flex;
-                align-items: center;
-                gap: 8px;
-                background: rgba(0,212,255,0.2);
-                padding: 5px 12px;
-                border-radius: 20px;
-                font-size: 0.85rem;
-            }}
-            .symbol-tag button {{ background: none; color: #ff6d00; padding: 0; margin: 0; font-size: 1.1rem; }}
-            hr {{ margin: 15px 0; border-color: rgba(255,255,255,0.1); }}
-            .section-title {{ font-size: 0.9rem; color: #00d4ff; margin: 10px 0 5px 0; }}
-            .live-badge {{ background: #d32f2f; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>🤖 Trading Bot Dashboard <span class="live-badge">OANDA</span></h1>
-            
-            <div class="notification-bar">
-                <span>📢 Notifications:</span>
-                <div id="notifications">Loading...</div>
-            </div>
-            
-            <div class="grid">
-                <div class="card">
-                    <h3>📊 Trading Status</h3>
-                    <div class="metric" id="dailyPnl">${daily_pnl:.2f}</div>
-                    <div class="metric-label">Daily P/L</div>
-                    <hr>
-                    <div>
-                        <span class="status-badge {'status-enabled' if state.get('trading_enabled') else 'status-disabled'}">
-                            {'🟢 ENABLED' if state.get('trading_enabled') else '🔴 DISABLED'}
-                        </span>
-                        <span class="status-badge {'status-open' if market_open else 'status-closed'}">
-                            {'🟢 MARKET OPEN' if market_open else '🔴 MARKET CLOSED'}
-                        </span>
-                    </div>
-                    <div style="margin-top: 10px;">
-                        <span class="status-badge mode-{asset_mode}">{mode_text}</span>
-                    </div>
-                </div>
-                
-                <div class="card">
-                    <h3>📈 Today's Activity</h3>
-                    <div class="metric">{state.get('trade_count', 0)} / {state.get('max_trades_per_day', 5)}</div>
-                    <div class="metric-label">Trades Today</div>
-                    <hr>
-                    <div class="metric">{state.get('error_count', 0)}</div>
-                    <div class="metric-label">Errors Today</div>
-                </div>
-                
-                <div class="card">
-                    <h3>💰 Profit Metrics</h3>
-                    <div class="metric" id="weeklyPnlDisplay">$--</div>
-                    <div class="metric-label">Weekly Total</div>
-                    <div id="dailyPercentDisplay" style="font-size: 0.9rem;">--% today</div>
-                    <hr>
-                    <div>💰 Balance: $<span id="usdtBalance">--</span></div>
-                    <div>🏆 Best Trade: <span id="bestTrade">--</span></div>
-                </div>
-            </div>
-            
-            <!-- Forex Market Override Toggle -->
-            <div class="card">
-                <h3>🔧 Forex Market Override</h3>
-                <div class="flex" style="align-items: center; justify-content: space-between; flex-wrap: wrap;">
-                    <div>
-                        <div>
-                            <span id="forexOverrideStatus" class="status-badge {'status-warning' if force_forex_override else 'status-enabled'}">
-                                {'⚠️ OVERRIDE ACTIVE' if force_forex_override else '✅ Normal Hours Only'}
-                            </span>
-                        </div>
-                        <div class="metric-label" style="margin-top: 8px;">
-                            Current Market: <span id="marketStatusDisplay">{'OPEN' if market_open else 'CLOSED'}</span>
-                        </div>
-                        <div style="font-size: 0.7rem; opacity: 0.6; margin-top: 8px;">
-                            ⚠️ WARNING: Trading outside normal hours (Sun 5pm - Fri 5pm ET) may have wider spreads
-                        </div>
-                    </div>
-                    <form method="post" action="/toggle-forex-override">
-                        <button type="submit" id="forexOverrideBtn" class="warning">
-                            {'🔒 Disable Override' if force_forex_override else '🔓 Force Enable 24/7'}
-                        </button>
-                    </form>
-                </div>
-            </div>
-            
-            <div class="card">
-                <h3>🎮 Controls</h3>
-                <div class="flex">
-                    <form method="post" action="/enable"><button class="success">▶️ Enable</button></form>
-                    <form method="post" action="/disable"><button class="danger">⏸️ Disable</button></form>
-                    <form method="post" action="/toggle-asset-mode"><button>🔄 Toggle Mode</button></form>
-                    <form method="post" action="/reset-daily-stats"><button class="warning">📊 Reset Stats</button></form>
-                    <form method="post" action="/clear-errors"><button>🗑️ Clear Errors</button></form>
-                    <form method="post" action="/backup-now"><button>💾 Backup</button></form>
-                    <form method="post" action="/logout"><button>🚪 Logout</button></form>
-                </div>
-            </div>
-            
-            <div class="card">
-                <h3>🔍 Symbol Filter</h3>
-                <form method="post" action="/update-allowed-symbols" class="flex">
-                    <input type="text" name="add_symbol" placeholder="Add symbol (e.g., EUR_USD, GBP_USD)" style="flex:1; padding:10px; border-radius:8px; background:rgba(255,255,255,0.2); color:white; border:none;">
-                    <button type="submit">➕ Add</button>
-                </form>
-                <div class="section-title">💱 Forex Pairs:</div>
-                <div class="flex" id="symbolsList">
-                    {''.join([f'<div class="symbol-tag">{s}<form method="post" action="/toggle-symbol/{s}" style="display:inline;"><button type="submit">✕</button></form></div>' for s in allowed_symbols])}
-                </div>
-            </div>
-            
-            <div class="card">
-                <h3>⚙️ Risk Settings</h3>
-                <form method="post" action="/update-risk-settings">
-                    <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));">
-                        <div><label>Max Units/trade:</label><input type="number" name="max_units_per_trade" value="{state.get('max_units_per_trade', 10000)}" step="1000"></div>
-                        <div><label>Max trades/day:</label><input type="number" name="max_trades_per_day" value="{state.get('max_trades_per_day', 5)}" step="1"></div>
-                        <div><label>Stop Loss (pips):</label><input type="number" name="stop_loss_pips" value="{state.get('stop_loss_pips', 50)}" step="5"></div>
-                        <div><label>Take Profit (pips):</label><input type="number" name="take_profit_pips" value="{state.get('take_profit_pips', 50)}" step="5"></div>
-                    </div>
-                    <button type="submit">💾 Save Settings</button>
-                </form>
-            </div>
-            
-            <div class="card">
-                <h3>📅 Weekly Breakdown</h3>
-                <table id="weeklyTable">
-                    <thead><tr><th>Date</th><th>P&L</th><th>Trades</th><th>Win Rate</th></tr></thead>
-                    <tbody id="weeklyTableBody"><tr><td colspan="4">Loading...</td></tr></tbody>
-                </table>
-            </div>
-            
-            <div class="card">
-                <h3>ℹ️ Info</h3>
-                <div>Broker: OANDA</div>
-                <div>Mode: {TRADING_MODE.upper()}</div>
-                <div>Strategy: {'AUTONOMOUS ON' if STRATEGY_ENABLED else 'AUTONOMOUS OFF'}</div>
-                <div>Last Reset: {state.get('last_reset_date', 'Never')}</div>
-                <div>Forex Override: {'ACTIVE (24/7 Mode)' if force_forex_override else 'OFF (Normal Hours)'}</div>
-            </div>
-        </div>
-        
-        <script>
-            function refreshNotifications() {{
-                fetch('/api/notifications', {{
-                    credentials: 'include'
-                }})
-                .then(function(response) {{ return response.json(); }})
-                .then(function(data) {{
-                    var container = document.getElementById('notifications');
-                    if (container && data.notifications) {{
-                        if (data.notifications.length === 0) {{
-                            container.innerHTML = '<div class="notification notification-low">No new notifications</div>';
-                        }} else {{
-                            var html = '';
-                            for (var i = 0; i < data.notifications.length; i++) {{
-                                var n = data.notifications[i];
-                                html += '<div class="notification notification-' + (n.priority || 'low') + '">' + n.message + '</div>';
-                            }}
-                            container.innerHTML = html;
-                        }}
-                    }}
-                }})
-                .catch(function(err) {{
-                    console.log('Notification error:', err);
-                    var container = document.getElementById('notifications');
-                    if (container) {{
-                        container.innerHTML = '<div class="notification notification-low">🔄 Loading...</div>';
-                    }}
-                }});
-            }}
-            
-            function refreshProfitMetrics() {{
-                fetch('/api/profit-metrics', {{credentials: 'include'}})
-                    .then(function(response) {{ return response.json(); }})
-                    .then(function(data) {{
-                        var weeklyElement = document.getElementById('weeklyPnlDisplay');
-                        if (weeklyElement) {{
-                            weeklyElement.innerHTML = '$' + data.weekly_pnl;
-                            weeklyElement.style.color = data.weekly_pnl >= 0 ? '#00c853' : '#d32f2f';
-                        }}
-                        var percentElement = document.getElementById('dailyPercentDisplay');
-                        if (percentElement) {{
-                            var sign = data.daily_percent >= 0 ? '+' : '';
-                            percentElement.innerHTML = sign + data.daily_percent + '% today';
-                        }}
-                        var balanceElement = document.getElementById('usdtBalance');
-                        if (balanceElement) {{
-                            balanceElement.innerHTML = data.usdt_balance;
-                        }}
-                        var bestElement = document.getElementById('bestTrade');
-                        if (bestElement) {{
-                            bestElement.innerHTML = '<span style="color:#00c853;">+$' + data.best_trade + '</span> on ' + (data.best_trade_symbol || 'N/A');
-                        }}
-                        var pnlElement = document.getElementById('dailyPnl');
-                        if (pnlElement) {{
-                            pnlElement.textContent = '$' + data.daily_pnl;
-                            pnlElement.style.color = data.daily_pnl >= 0 ? '#00c853' : '#d32f2f';
-                        }}
-                    }})
-                    .catch(function(err) {{ console.log('Profit metrics error:', err); }});
-                
-                fetch('/api/weekly-breakdown', {{credentials: 'include'}})
-                    .then(function(response) {{ return response.json(); }})
-                    .then(function(data) {{
-                        var tbody = document.getElementById('weeklyTableBody');
-                        if (tbody) {{
-                            var html = '';
-                            for (var date in data) {{
-                                if (data.hasOwnProperty(date)) {{
-                                    var stats = data[date];
-                                    var pnlColor = stats.pnl >= 0 ? '#00c853' : '#d32f2f';
-                                    var pnlSign = stats.pnl >= 0 ? '+' : '';
-                                    html += '<tr><td>' + date + '</td><td style="color: ' + pnlColor + ';">' + pnlSign + '$' + stats.pnl.toFixed(2) + '</td><td>' + stats.trades + '</td><td>' + stats.win_rate + '%</td></tr>';
-                                }}
-                            }}
-                            if (html === '') {{
-                                html = '<tr><td colspan="4">No trades this week</td></tr>';
-                            }}
-                            tbody.innerHTML = html;
-                        }}
-                    }})
-                    .catch(function(err) {{ console.log('Weekly breakdown error:', err); }});
-            }}
-            
-            function refreshForexOverride() {{
-                fetch('/api/forex-override', {{credentials: 'include'}})
-                    .then(function(response) {{ return response.json(); }})
-                    .then(function(data) {{
-                        var statusSpan = document.getElementById('forexOverrideStatus');
-                        var btn = document.getElementById('forexOverrideBtn');
-                        if (statusSpan) {{
-                            if (data.force_forex_trading) {{
-                                statusSpan.innerHTML = '⚠️ OVERRIDE ACTIVE (24/7 Mode)';
-                                statusSpan.className = 'status-badge status-warning';
-                            }} else {{
-                                statusSpan.innerHTML = '✅ Normal Hours Only';
-                                statusSpan.className = 'status-badge status-enabled';
-                            }}
-                        }}
-                        if (btn) {{
-                            if (data.force_forex_trading) {{
-                                btn.innerHTML = '🔒 Disable Override';
-                            }} else {{
-                                btn.innerHTML = '🔓 Force Enable 24/7';
-                            }}
-                        }}
-                    }})
-                    .catch(function(err) {{ console.log('Forex override refresh error:', err); }});
-            }}
-            
-            function refreshMarketStatus() {{
-                fetch('/api/notifications', {{credentials: 'include'}})
-                    .then(function(response) {{ return response.json(); }})
-                    .then(function(data) {{
-                        var marketSpan = document.getElementById('marketStatusDisplay');
-                        if (marketSpan && data.notifications) {{
-                            for (var i = 0; i < data.notifications.length; i++) {{
-                                if (data.notifications[i].type === 'market') {{
-                                    marketSpan.innerHTML = data.notifications[i].message;
-                                    break;
-                                }}
-                            }}
-                        }}
-                    }})
-                    .catch(function(err) {{ console.log('Market status refresh error:', err); }});
-            }}
-            
-            // Refresh every 10 seconds
-            refreshNotifications();
-            refreshProfitMetrics();
-            refreshForexOverride();
-            refreshMarketStatus();
-            setInterval(refreshNotifications, 10000);
-            setInterval(refreshProfitMetrics, 10000);
-            setInterval(refreshForexOverride, 10000);
-            setInterval(refreshMarketStatus, 10000);
-        </script>
-    </body>
-    </html>
-    """
+    write_log(f"Forex override changed to {state['force_forex_trading']}")
+    return RedirectResponse("/dashboard", status_code=302)
 
 
 if __name__ == "__main__":
     import uvicorn
-    import os
-    port = int(os.environ.get("PORT", 8000))
+
+    port = int(os.getenv("PORT", "8000"))
+
+    # Required by Render
     uvicorn.run(app, host="0.0.0.0", port=port)
