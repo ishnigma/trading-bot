@@ -35,4 +35,3 @@ sudo systemctl daemon-reload
 sudo systemctl enable tvbot.service
 sudo systemctl restart tvbot.service
 sudo systemctl status tvbot.service
-
