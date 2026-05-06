@@ -10,7 +10,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from config import DASHBOARD_PASSWORD, TRADING_MODE, WEBHOOK_SECRET, BOT_VERSION
-from config import STRATEGY_ENABLED, STRATEGY_TIMEFRAME
+from config import STRATEGY_ENABLED, STRATEGY_TIMEFRAME, STRATEGY_TYPE
 from helpers import (
     build_oanda_order,
     calculate_units_from_price,
@@ -41,6 +41,7 @@ from helpers import (
     validate_trade,
     write_log,
     auto_disable_bad_strategies,
+    send_telegram_message,
 )
 from telegram_bot import check_telegram_commands
 from strategy import execute_autonomous_trade, monitor_open_positions
@@ -274,7 +275,14 @@ def get_notifications(session: str = Cookie(default="")):
     notifications.append({"type": "mode", "message": f"{mode_icons.get(asset_mode, '💱')} Trading: {asset_mode.upper()}", "priority": "low"})
     
     if STRATEGY_ENABLED:
-        notifications.append({"type": "strategy", "message": f"🤖 Auto Strategy: {STRATEGY_TYPE} (every {STRATEGY_TIMEFRAME} min)", "priority": "low"})
+        # Safe notification message for strategy status
+        strategy_type = globals().get("STRATEGY_TYPE", "ema_crossover")
+        strategy_timeframe = globals().get("STRATEGY_TIMEFRAME", "5")
+        notifications.append({
+            "type": "strategy",
+            "message": f"🤖 Auto Strategy: {strategy_type} (every {strategy_timeframe} min)",
+            "priority": "low"
+        })
     
     trades = get_trades_from_db(3)
     for trade in trades:
