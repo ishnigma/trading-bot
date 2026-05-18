@@ -57,7 +57,7 @@ DEFAULT_STATE = {
     "trade_count": 0,
     "last_trade_time": None,
     "last_reset_date": None,
-    "trading_enabled": False,
+    "trading_enabled": True,
     "maintenance_mode": False,
     "live_confirmed": False,
     "last_telegram_update_id": 0,
