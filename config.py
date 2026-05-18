@@ -35,6 +35,14 @@ RSI_PERIOD = int(os.getenv("RSI_PERIOD", "14"))
 RSI_OVERSOLD = int(os.getenv("RSI_OVERSOLD", "30"))
 RSI_OVERBOUGHT = int(os.getenv("RSI_OVERBOUGHT", "70"))
 
+# Golden Cross
+SMA_FAST_PERIOD = int(os.getenv("SMA_FAST_PERIOD", "50"))
+SMA_SLOW_PERIOD = int(os.getenv("SMA_SLOW_PERIOD", "200"))
+
+# Trend Filter (ADX)
+ADX_PERIOD = int(os.getenv("ADX_PERIOD", "14"))
+ADX_THRESHOLD = int(os.getenv("ADX_THRESHOLD", "25"))
+
 # Telegram
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
