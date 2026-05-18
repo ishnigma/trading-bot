@@ -9,6 +9,10 @@ from config import (
     RSI_PERIOD,
     RSI_OVERSOLD,
     RSI_OVERBOUGHT,
+    SMA_FAST_PERIOD,
+    SMA_SLOW_PERIOD,
+    ADX_PERIOD,
+    ADX_THRESHOLD,
     STRATEGY_ENABLED,
     STRATEGY_TIMEFRAME,
     STRATEGY_TYPE,
@@ -73,6 +77,58 @@ def calculate_rsi(prices, period=14):
     return rsi_values
 
 
+def calculate_sma(prices, period):
+    if len(prices) < period:
+        return [0] * len(prices)
+    sma = [0] * len(prices)
+    for i in range(period - 1, len(prices)):
+        sma[i] = sum(prices[i - period + 1 : i + 1]) / period
+    return sma
+
+
+def calculate_adx(candles, period=14):
+    if len(candles) < period * 2:
+        return [0] * len(candles)
+    
+    tr, plus_dm, minus_dm = [], [], []
+    for i in range(1, len(candles)):
+        high, low = candles[i]['high'], candles[i]['low']
+        prev_high, prev_low, prev_close = candles[i-1]['high'], candles[i-1]['low'], candles[i-1]['close']
+        
+        tr.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+        
+        up_move = high - prev_high
+        down_move = prev_low - low
+        
+        plus_dm.append(up_move if up_move > down_move and up_move > 0 else 0)
+        minus_dm.append(down_move if down_move > up_move and down_move > 0 else 0)
+        
+    def smooth(data, period):
+        smoothed = [sum(data[:period])]
+        for i in range(period, len(data)):
+            smoothed.append(smoothed[-1] - (smoothed[-1]/period) + data[i])
+        return [0]*(period-1) + smoothed
+
+    tr_smooth = smooth(tr, period)
+    plus_dm_smooth = smooth(plus_dm, period)
+    minus_dm_smooth = smooth(minus_dm, period)
+    
+    dx = []
+    for i in range(len(tr_smooth)):
+        if tr_smooth[i] == 0:
+            dx.append(0)
+            continue
+        plus_di = 100 * plus_dm_smooth[i] / tr_smooth[i]
+        minus_di = 100 * minus_dm_smooth[i] / tr_smooth[i]
+        if plus_di + minus_di == 0:
+            dx.append(0)
+        else:
+            dx.append(100 * abs(plus_di - minus_di) / (plus_di + minus_di))
+            
+    adx_smooth = smooth(dx, period)
+    return [0]*(len(candles) - len(adx_smooth)) + adx_smooth
+
+
 def get_candles(symbol, count=100, granularity="M5"):
     # Get candles from OANDA
     try:
@@ -132,12 +188,45 @@ def check_rsi_signal(symbol, granularity="M5"):
     return None, None, "No RSI signal"
 
 
+def check_golden_cross(symbol, granularity="M5"):
+    candles = get_candles(symbol, count=max(SMA_SLOW_PERIOD + 5, ADX_PERIOD * 2 + 5), granularity=granularity)
+
+    if len(candles) < SMA_SLOW_PERIOD + 2:
+        return None, None, "Insufficient candle data"
+
+    closes = [candle["close"] for candle in candles]
+    
+    fast_sma = calculate_sma(closes, SMA_FAST_PERIOD)
+    slow_sma = calculate_sma(closes, SMA_SLOW_PERIOD)
+    adx = calculate_adx(candles, ADX_PERIOD)
+
+    current_fast = fast_sma[-1]
+    current_slow = slow_sma[-1]
+    previous_fast = fast_sma[-2]
+    previous_slow = slow_sma[-2]
+    current_price = closes[-1]
+    current_adx = adx[-1]
+
+    if current_adx < ADX_THRESHOLD:
+        return None, None, f"ADX ({current_adx:.1f}) below threshold ({ADX_THRESHOLD}) - Ranging Market"
+
+    if previous_fast <= previous_slow and current_fast > current_slow:
+        return "buy", current_price, f"Golden Cross (SMA {SMA_FAST_PERIOD} > SMA {SMA_SLOW_PERIOD}) with ADX {current_adx:.1f}"
+
+    if previous_fast >= previous_slow and current_fast < current_slow:
+        return "sell", current_price, f"Death Cross (SMA {SMA_FAST_PERIOD} < SMA {SMA_SLOW_PERIOD}) with ADX {current_adx:.1f}"
+
+    return None, None, "No Golden Cross signal"
+
+
 def check_autonomous_signals(symbol):
     # Choose strategy type
     granularity = f"M{STRATEGY_TIMEFRAME}"
 
     if STRATEGY_TYPE == "rsi":
         return check_rsi_signal(symbol, granularity)
+    elif STRATEGY_TYPE == "golden_cross":
+        return check_golden_cross(symbol, granularity)
 
     return check_ema_crossover(symbol, granularity)
 
