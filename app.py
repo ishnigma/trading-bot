@@ -129,8 +129,8 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(make_daily_backup, "cron", hour=16, minute=20, timezone=market_timezone)
     scheduler.add_job(clean_old_backups, "cron", hour=16, minute=30, timezone=market_timezone)
 
-    scheduler.add_job(disable_trading_end_of_day, "cron", hour=15, minute=45, timezone=market_timezone)
-    scheduler.add_job(enable_trading_morning, "cron", hour=9, minute=35, timezone=market_timezone)
+    # scheduler.add_job(disable_trading_end_of_day, "cron", hour=15, minute=45, timezone=market_timezone)
+    # scheduler.add_job(enable_trading_morning, "cron", hour=9, minute=35, timezone=market_timezone)
 
     if STRATEGY_ENABLED:
         scheduler.add_job(execute_autonomous_trade, "interval", minutes=int(STRATEGY_TIMEFRAME))
